@@ -11,14 +11,13 @@
 
 #define SM4_BLOCK_SIZE 16
 #define SM4_KEY_SIZE 16
-#define XTS_SM4_KEY_SIZE (SM4_KEY_SIZE * 2)
-#define XTS_SM4_TWEAK_SIZE 16
 #define SM4_IV_SIZE 16
 
 
-int call_xts_sm4_encrypt(unsigned char *key, unsigned char *iv,
+int call_gcm_sm4_encrypt(unsigned char *key, unsigned char *iv,
                          unsigned char *in, size_t in_len,
-                         unsigned char *out, int *out_len) {
+                         unsigned char *out, int *out_len,
+                         unsigned char *tag, int tag_len) {
     int ret = 0;
     EVP_CIPHER_CTX *ctx = NULL;
     int len = 0;
@@ -26,9 +25,9 @@ int call_xts_sm4_encrypt(unsigned char *key, unsigned char *iv,
     EVP_CIPHER *cipher = NULL;
 
     // get the cipher
-    cipher = EVP_CIPHER_fetch(NULL, "SM4-XTS", NULL);
+    cipher = EVP_CIPHER_fetch(NULL, "SM4-GCM", NULL);
     if (!cipher) {
-        fprintf(stderr, "Failed to get SM4-XTS cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        fprintf(stderr, "Failed to get SM4-GCM cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -43,6 +42,13 @@ int call_xts_sm4_encrypt(unsigned char *key, unsigned char *iv,
     // Initialize the encryption operation with XTS mode
     if (1 != EVP_EncryptInit_ex(ctx, cipher, NULL, key, iv)) {
         fprintf(stderr, "Failed to initialize encryption: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // set padding to 1 for gcm mode
+    if (1 != EVP_CIPHER_CTX_set_padding(ctx, 1)) {
+        fprintf(stderr, "Failed to set padding: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -65,6 +71,13 @@ int call_xts_sm4_encrypt(unsigned char *key, unsigned char *iv,
 
     *out_len = ciphertext_len;
 
+    // Get the tag
+    if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, tag_len, tag)) {
+        fprintf(stderr, "Failed to get GCM tag: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
     ret = 0;
 
 out:
@@ -74,9 +87,10 @@ out:
     return ret;
 }
 
-int call_xts_sm4_decrypt(unsigned char *key, unsigned char *iv,
+int call_gcm_sm4_decrypt(unsigned char *key, unsigned char *iv,
                          unsigned char *in, size_t in_len,
-                         unsigned char *out, int *out_len) {
+                         unsigned char *out, int *out_len,
+                         unsigned char *tag, int tag_len) {
     int ret = 0;
     EVP_CIPHER_CTX *ctx = NULL;
     int len = 0;
@@ -84,9 +98,9 @@ int call_xts_sm4_decrypt(unsigned char *key, unsigned char *iv,
     EVP_CIPHER *cipher = NULL;
 
     // get the cipher
-    cipher = EVP_CIPHER_fetch(NULL, "SM4-XTS", NULL);
+    cipher = EVP_CIPHER_fetch(NULL, "SM4-GCM", NULL);
     if (!cipher) {
-        fprintf(stderr, "Failed to get SM4-XTS cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        fprintf(stderr, "Failed to get SM4-GCM cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -101,6 +115,20 @@ int call_xts_sm4_decrypt(unsigned char *key, unsigned char *iv,
     // Initialize the decryption operation with XTS mode
     if (1 != EVP_DecryptInit_ex(ctx, cipher, NULL, key, iv)) {
         fprintf(stderr, "Failed to initialize decryption: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // set padding to 1 for gcm mode
+    if (1 != EVP_CIPHER_CTX_set_padding(ctx, 1)) {
+        fprintf(stderr, "Failed to set padding: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // set tag
+    if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag_len, tag)) {
+        fprintf(stderr, "Failed to set GCM tag: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -135,28 +163,35 @@ out:
 int main(int argc, char *argv[]) {
     int ret = 0;
 
-    unsigned char key[XTS_SM4_KEY_SIZE] = {0}; // double length for XTS mode
-    unsigned char iv[XTS_SM4_TWEAK_SIZE] = {0}; // SM4 IV size is 16 bytes
+    unsigned char key[SM4_KEY_SIZE] = {0}; // SM4 key size is 16 bytes
+    unsigned char iv[SM4_IV_SIZE] = {0}; // SM4 IV size is 16 bytes
     unsigned char data[] = "Hello, World!Hello, World!Hello, World!Hello, World!Hello, World!"; // Example data to be processed
     size_t data_len = sizeof(data) - 1; // Exclude null terminator
     unsigned char cipher_out[sizeof(data)] = {0};
     int cipher_out_len = 0;
     unsigned char plain_out[sizeof(data)] = {0};
     int plain_out_len = 0;
+    unsigned char tag[16] = {0};
+    int tag_len = 16;
 
     // Encrypt the data
-    call_xts_sm4_encrypt(key, iv, data, data_len, cipher_out, &cipher_out_len);
+    call_gcm_sm4_encrypt(key, iv, data, data_len, cipher_out, &cipher_out_len, tag, tag_len);
     // print the resulting ciphertext
-    printf("SM4 XTS Ciphertext: ");
+    printf("SM4 GCM Ciphertext: ");
     for (int i = 0; i < cipher_out_len; i++) {
         printf("%02x", cipher_out[i]);
     }
     printf("\n");
+    printf("SM4 GCM Tag: ");
+    for (int i = 0; i < tag_len; i++) {
+        printf("%02x", tag[i]);
+    }
+    printf("\n");
 
     // Decrypt the data
-    call_xts_sm4_decrypt(key, iv, cipher_out, cipher_out_len, plain_out, &plain_out_len);
+    call_gcm_sm4_decrypt(key, iv, cipher_out, cipher_out_len, plain_out, &plain_out_len, tag, tag_len);
     // print the resulting plaintext
-    printf("SM4 XTS Decrypted Plaintext: ");
+    printf("SM4 GCM Decrypted Plaintext: ");
     for (int i = 0; i < plain_out_len; i++) {
         printf("%c", plain_out[i]);
     }
