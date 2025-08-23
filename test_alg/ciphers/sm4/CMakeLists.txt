@@ -17,3 +17,10 @@ add_executable(test_gcm_sm4
 target_link_libraries(test_gcm_sm4
         ${OPENSSL_ROOT_DIR}/libcrypto.a
         ${OPENSSL_ROOT_DIR}/libssl.a)
+
+# ccm mode
+add_executable(test_ccm_sm4
+        ccm_sm4.c)
+target_link_libraries(test_ccm_sm4
+        ${OPENSSL_ROOT_DIR}/libcrypto.a
+        ${OPENSSL_ROOT_DIR}/libssl.a)

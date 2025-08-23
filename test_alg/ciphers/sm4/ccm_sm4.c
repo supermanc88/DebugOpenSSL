@@ -12,10 +12,10 @@
 #define SM4_BLOCK_SIZE 16
 #define SM4_KEY_SIZE 16
 #define SM4_IV_SIZE 16
-#define GCM_NONCE_LEN 12
+#define CCM_NONCE_LEN 12
 
 
-int call_gcm_sm4_encrypt(unsigned char *key, unsigned char *iv,
+int call_ccm_sm4_encrypt(unsigned char *key, unsigned char *iv,
                          unsigned char *in, size_t in_len,
                          unsigned char *out, int *out_len,
                          unsigned char *tag, int tag_len) {
@@ -24,13 +24,12 @@ int call_gcm_sm4_encrypt(unsigned char *key, unsigned char *iv,
     int len = 0;
     int ciphertext_len = 0;
     EVP_CIPHER *cipher = NULL;
-    // SM4-GCM standard IV length is 12 bytes, but here we use 16 bytes for simplicity
-    const int iv_len = GCM_NONCE_LEN; // 12 bytes
+    const int iv_len = CCM_NONCE_LEN; // Recommended IV length for CCM is 12 bytes
 
     // get the cipher
-    cipher = EVP_CIPHER_fetch(NULL, "SM4-GCM", NULL);
+    cipher = EVP_CIPHER_fetch(NULL, "SM4-CCM", NULL);
     if (!cipher) {
-        fprintf(stderr, "Failed to get SM4-GCM cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        fprintf(stderr, "Failed to get SM4-CCM cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -49,9 +48,14 @@ int call_gcm_sm4_encrypt(unsigned char *key, unsigned char *iv,
         goto out;
     }
 
-    // step 2: set iv length
+    // step 2: set iv length and tag length
     if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, iv_len, NULL)) {
         fprintf(stderr, "Failed to set IV length: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, tag_len, NULL)) {
+        fprintf(stderr, "Failed to set CCM tag length: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -59,6 +63,13 @@ int call_gcm_sm4_encrypt(unsigned char *key, unsigned char *iv,
     // step 3: init with key and iv now without cipher
     if (1 != EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv)) {
         fprintf(stderr, "Failed to initialize encryption: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // step 4: provide the total plaintext length
+    if (1 != EVP_EncryptUpdate(ctx, NULL, &len, NULL, in_len)) {
+        fprintf(stderr, "Failed to set plaintext length: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -83,7 +94,7 @@ int call_gcm_sm4_encrypt(unsigned char *key, unsigned char *iv,
 
     // Get the tag
     if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, tag_len, tag)) {
-        fprintf(stderr, "Failed to get GCM tag: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        fprintf(stderr, "Failed to get CCM tag: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -97,7 +108,7 @@ out:
     return ret;
 }
 
-int call_gcm_sm4_decrypt(unsigned char *key, unsigned char *iv,
+int call_ccm_sm4_decrypt(unsigned char *key, unsigned char *iv,
                          unsigned char *in, size_t in_len,
                          unsigned char *out, int *out_len,
                          unsigned char *tag, int tag_len) {
@@ -106,13 +117,12 @@ int call_gcm_sm4_decrypt(unsigned char *key, unsigned char *iv,
     int len = 0;
     int plaintext_len = 0;
     EVP_CIPHER *cipher = NULL;
-    // SM4-GCM standard IV length is 12 bytes, but here we use 16 bytes for simplicity
-    const int iv_len = GCM_NONCE_LEN; // 12 bytes
+    const int iv_len = CCM_NONCE_LEN; // Recommended IV length for CCM is 12 bytes
 
     // get the cipher
-    cipher = EVP_CIPHER_fetch(NULL, "SM4-GCM", NULL);
+    cipher = EVP_CIPHER_fetch(NULL, "SM4-CCM", NULL);
     if (!cipher) {
-        fprintf(stderr, "Failed to get SM4-GCM cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        fprintf(stderr, "Failed to get SM4-CCM cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -131,9 +141,14 @@ int call_gcm_sm4_decrypt(unsigned char *key, unsigned char *iv,
         goto out;
     }
 
-    // step 2: set iv length
+    // step 2: set iv length and tag length
     if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, iv_len, NULL)) {
         fprintf(stderr, "Failed to set IV length: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, tag_len, tag)) {
+        fprintf(stderr, "Failed to set CCM tag length: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -145,9 +160,9 @@ int call_gcm_sm4_decrypt(unsigned char *key, unsigned char *iv,
         goto out;
     }
 
-    // set tag, must be done before EVP_DecryptFinal_ex
-    if (1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, tag_len, tag)) {
-        fprintf(stderr, "Failed to set GCM tag: %s\n", ERR_error_string(ERR_get_error(), NULL));
+    // step 4: provide the total ciphertext length
+    if (1 != EVP_DecryptUpdate(ctx, NULL, &len, NULL, in_len)) {
+        fprintf(stderr, "Failed to set ciphertext length: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
         goto out;
     }
@@ -194,23 +209,23 @@ int main(int argc, char *argv[]) {
     int tag_len = 16;
 
     // Encrypt the data
-    call_gcm_sm4_encrypt(key, iv, data, data_len, cipher_out, &cipher_out_len, tag, tag_len);
+    call_ccm_sm4_encrypt(key, iv, data, data_len, cipher_out, &cipher_out_len, tag, tag_len);
     // print the resulting ciphertext
-    printf("SM4 GCM Ciphertext: ");
+    printf("SM4 CCM Ciphertext: ");
     for (int i = 0; i < cipher_out_len; i++) {
         printf("%02x", cipher_out[i]);
     }
     printf("\n");
-    printf("SM4 GCM Tag: ");
+    printf("SM4 CCM Tag: ");
     for (int i = 0; i < tag_len; i++) {
         printf("%02x", tag[i]);
     }
     printf("\n");
 
     // Decrypt the data
-    call_gcm_sm4_decrypt(key, iv, cipher_out, cipher_out_len, plain_out, &plain_out_len, tag, tag_len);
+    call_ccm_sm4_decrypt(key, iv, cipher_out, cipher_out_len, plain_out, &plain_out_len, tag, tag_len);
     // print the resulting plaintext
-    printf("SM4 GCM Decrypted Plaintext: ");
+    printf("SM4 CCM Decrypted Plaintext: ");
     for (int i = 0; i < plain_out_len; i++) {
         printf("%c", plain_out[i]);
     }
