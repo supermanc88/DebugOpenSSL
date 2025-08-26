@@ -11,5 +11,6 @@ include_directories(${OPENSSL_ROOT_DIR}/include)
 
 add_executable(DebugOpenSSL main.c)
 
-add_subdirectory(test_alg/macs)
+add_subdirectory(test_alg/asymciphers)
 add_subdirectory(test_alg/ciphers)
+add_subdirectory(test_alg/macs)
