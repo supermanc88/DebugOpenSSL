@@ -24,3 +24,11 @@ add_executable(test_ccm_sm4
 target_link_libraries(test_ccm_sm4
         ${OPENSSL_ROOT_DIR}/libcrypto.a
         ${OPENSSL_ROOT_DIR}/libssl.a)
+
+
+# ctr mode
+add_executable(test_ctr_sm4
+        ctr_sm4.c)
+target_link_libraries(test_ctr_sm4
+        ${OPENSSL_ROOT_DIR}/libcrypto.a
+        ${OPENSSL_ROOT_DIR}/libssl.a)
