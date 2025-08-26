@@ -32,3 +32,33 @@ add_executable(test_ctr_sm4
 target_link_libraries(test_ctr_sm4
         ${OPENSSL_ROOT_DIR}/libcrypto.a
         ${OPENSSL_ROOT_DIR}/libssl.a)
+
+
+# ofb mode
+add_executable(test_ofb_sm4
+        ofb_sm4.c)
+target_link_libraries(test_ofb_sm4
+        ${OPENSSL_ROOT_DIR}/libcrypto.a
+        ${OPENSSL_ROOT_DIR}/libssl.a)
+
+
+# cfb mode
+add_executable(test_cfb_sm4
+        cfb_sm4.c)
+target_link_libraries(test_cfb_sm4
+        ${OPENSSL_ROOT_DIR}/libcrypto.a
+        ${OPENSSL_ROOT_DIR}/libssl.a)
+
+# ecb mode
+add_executable(test_ecb_sm4
+        ecb_sm4.c)
+target_link_libraries(test_ecb_sm4
+        ${OPENSSL_ROOT_DIR}/libcrypto.a
+        ${OPENSSL_ROOT_DIR}/libssl.a)
+
+# cbc mode
+add_executable(test_cbc_sm4
+        cbc_sm4.c)
+target_link_libraries(test_cbc_sm4
+        ${OPENSSL_ROOT_DIR}/libcrypto.a
+        ${OPENSSL_ROOT_DIR}/libssl.a)
