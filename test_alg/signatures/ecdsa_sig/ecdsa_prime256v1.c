@@ -18,6 +18,7 @@ int call_ecdsa_sm2p256v1_genkey(unsigned char **pubkey, int *pubkey_len,
     EC_KEY *eckey = NULL;
     size_t pri_len = 0, pub_len = 0;
     unsigned char *temp_pri = NULL, *temp_pub = NULL;
+    BIGNUM *priv_bn = NULL; // 用于存储私钥的BIGNUM
 
     // 1. create context
     pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
@@ -79,6 +80,17 @@ int call_ecdsa_sm2p256v1_genkey(unsigned char **pubkey, int *pubkey_len,
         goto out;
     }
     *privkey_len = pri_len;
+
+    priv_bn = EC_KEY_get0_private_key(eckey);
+    if (priv_bn) {
+        char *priv_hex = BN_bn2hex(priv_bn);
+        if (priv_hex) {
+            printf("Naked Private Key (%d bytes):\n", (int)strlen(priv_hex) / 2);
+            printf(priv_hex);
+            printf("\n");
+            OPENSSL_free(priv_hex);
+        }
+    }
 
     // 7. allocate memory for public key
     pub_len = i2o_ECPublicKey(eckey, NULL);
@@ -204,8 +216,8 @@ int call_ecdsa_sm2p256v1_signdata(const unsigned char *msg, int msg_len,
 
     ret = 0;
 out:
-    if (pctx) {
-        EVP_PKEY_CTX_free(pctx);
+    if (mdctx) {
+        EVP_MD_CTX_free(mdctx);
     }
     if (pkey) {
         EVP_PKEY_free(pkey);
@@ -294,8 +306,8 @@ int call_ecdsa_sm2p256v1_verifydata(const unsigned char *msg, int msg_len,
     ret = 0;
 
 out:
-    if (pctx) {
-        EVP_PKEY_CTX_free(pctx);
+    if (mdctx) {
+        EVP_MD_CTX_free(mdctx);
     }
     if (pkey) {
         EVP_PKEY_free(pkey);
