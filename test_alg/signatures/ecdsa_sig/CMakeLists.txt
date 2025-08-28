@@ -15,3 +15,10 @@ add_executable(test_ecdsa_other_curves
 target_link_libraries(test_ecdsa_other_curves
         ${OPENSSL_ROOT_DIR}/libcrypto.a
         ${OPENSSL_ROOT_DIR}/libssl.a)
+
+# esdsa with ed25519
+add_executable(test_ecdsa_ed25519
+            ecdsa_ed25519.c)
+target_link_libraries(test_ecdsa_ed25519
+        ${OPENSSL_ROOT_DIR}/libcrypto.a
+        ${OPENSSL_ROOT_DIR}/libssl.a)
