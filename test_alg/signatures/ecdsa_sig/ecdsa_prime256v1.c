@@ -118,7 +118,7 @@ out:
     return ret;
 }
 
-int call_ecdsa_sm2p256v1_sign(const unsigned char *msg, int msg_len,
+int call_ecdsa_sm2p256v1_signdata(const unsigned char *msg, int msg_len,
     const unsigned char *privkey, int privkey_len,
     unsigned char **sig, int *sig_len) {
     int ret = 0;
@@ -217,7 +217,7 @@ out:
 }
 
 
-int call_ecdsa_sm2p256v1_verify(const unsigned char *msg, int msg_len,
+int call_ecdsa_sm2p256v1_verifydata(const unsigned char *msg, int msg_len,
     const unsigned char *sig, int sig_len,
     const unsigned char *pubkey, int pubkey_len) {
     int ret = 0;
@@ -290,8 +290,6 @@ int call_ecdsa_sm2p256v1_verify(const unsigned char *msg, int msg_len,
         ret = -1;
         goto out;
     }
-    // ret == 1 means signature is valid
-    // ret == 0 means signature is invalid
 
     ret = 0;
 
@@ -308,6 +306,179 @@ out:
     return ret;
 }
 
+
+int call_ecdsa_prime256v1_signhash(const unsigned char *hash, int hash_len,
+    const unsigned char *privkey, int privkey_len,
+    unsigned char **sig, int *sig_len) {
+    int ret = 0;
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EC_KEY *eckey = NULL;
+    const unsigned char *temp_priv = privkey;
+    size_t slen = 0;
+
+    // 1. convert DER encoded private key to EC_KEY
+    eckey = d2i_ECPrivateKey(NULL, &temp_priv, privkey_len);
+    if (!eckey) {
+        fprintf(stderr, "d2i_ECPrivateKey failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 2. create EVP_PKEY from EC_KEY
+    pkey = EVP_PKEY_new();
+    if (!pkey) {
+        fprintf(stderr, "EVP_PKEY_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    if (EVP_PKEY_set1_EC_KEY(pkey, eckey) <= 0) {
+        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 3. create context for signing
+    pctx = EVP_PKEY_CTX_new(pkey, NULL);
+    if (!pctx) {
+        fprintf(stderr, "EVP_PKEY_CTX_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 4. initialize signing
+    if (EVP_PKEY_sign_init(pctx) <= 0) {
+        fprintf(stderr, "EVP_PKEY_sign_init failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 5. set digest algorithm
+    if (EVP_PKEY_CTX_set_signature_md(pctx, EVP_sha256()) <= 0) {
+        fprintf(stderr, "EVP_PKEY_CTX_set_signature_md failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 6. determine buffer length
+    if (EVP_PKEY_sign(pctx, NULL, &slen, hash, hash_len) <= 0) {
+        fprintf(stderr, "EVP_PKEY_sign (get length) failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    *sig = (unsigned char *)malloc(slen);
+    if (!*sig) {
+        fprintf(stderr, "malloc for sig failed\n");
+        ret = -1;
+        goto out;
+    }
+
+    // 7. sign the hash
+    if (EVP_PKEY_sign(pctx, *sig, &slen, hash, hash_len) <= 0) {
+        fprintf(stderr, "EVP_PKEY_sign failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        free(*sig);
+        *sig = NULL;
+        ret = -1;
+        goto out;
+    }
+    *sig_len = slen;
+    ret = 0;
+
+out:
+    if (pctx) {
+        EVP_PKEY_CTX_free(pctx);
+    }
+    if (pkey) {
+        EVP_PKEY_free(pkey);
+    }
+    if (eckey) {
+        EC_KEY_free(eckey);
+    }
+    return ret;
+}
+
+int call_ecdsa_prime256v1_verifyhash(const unsigned char *hash, int hash_len,
+    const unsigned char *sig, int sig_len,
+    const unsigned char *pubkey, int pubkey_len) {
+    int ret = 0;
+    EVP_PKEY *pkey = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EC_KEY *eckey = NULL;
+    const unsigned char *temp_pub = pubkey;
+
+    // new eckey via set nid
+    eckey = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!eckey) {
+        fprintf(stderr, "EC_KEY_new_by_curve_name failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    // 1. set public key to EC_KEY
+    if (EC_KEY_oct2key(eckey, temp_pub, pubkey_len, NULL) != 1) {
+        fprintf(stderr, "ec_key_oct2key failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 2. create EVP_PKEY from EC_KEY
+    pkey = EVP_PKEY_new();
+    if (!pkey) {
+        fprintf(stderr, "EVP_PKEY_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 3. set EC_KEY to EVP_PKEY
+    if (EVP_PKEY_set1_EC_KEY(pkey, eckey) <= 0) {
+        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 4. create context for verification
+    pctx = EVP_PKEY_CTX_new(pkey, NULL);
+    if (!pctx) {
+        fprintf(stderr, "EVP_PKEY_CTX_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 5. initialize verification
+    if (EVP_PKEY_verify_init(pctx) <= 0) {
+        fprintf(stderr, "EVP_PKEY_verify_init failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 6. set digest algorithm
+    if (EVP_PKEY_CTX_set_signature_md(pctx, EVP_sha256()) <= 0) {
+        fprintf(stderr, "EVP_PKEY_CTX_set_signature_md failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 7. verify signature
+    ret = EVP_PKEY_verify(pctx, sig, sig_len, hash, hash_len);
+    if (ret < 0) {
+        fprintf(stderr, "EVP_PKEY_verify failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    ret = 0;
+
+
+out:
+    if (pctx) {
+        EVP_PKEY_CTX_free(pctx);
+    }
+    if (pkey) {
+        EVP_PKEY_free(pkey);
+    }
+    if (eckey) {
+        EC_KEY_free(eckey);
+    }
+    return ret;
+}
 
 
 int main(int argc, char *argv[]) {
@@ -333,7 +504,8 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");
 
-    ret = call_ecdsa_sm2p256v1_sign((const unsigned char *)"hello, world", strlen("hello, world"),
+    printf("call ecdsa_sm2p256v1_signdata ...\n");
+    ret = call_ecdsa_sm2p256v1_signdata((const unsigned char *)"hello, world", strlen("hello, world"),
         privkey, privkey_len, &sig, &sig_len);
     if (ret != 0) {
         fprintf(stderr, "call_ecdsa_sm2p256v1_sign failed\n");
@@ -345,7 +517,7 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");
 
-    ret = call_ecdsa_sm2p256v1_verify((const unsigned char *)"hello, world", strlen("hello, world"),
+    ret = call_ecdsa_sm2p256v1_verifydata((const unsigned char *)"hello, world", strlen("hello, world"),
         sig, sig_len, pubkey, pubkey_len);
     if (ret != 0) {
         printf("Signature is invalid\n");
@@ -353,6 +525,38 @@ int main(int argc, char *argv[]) {
         printf("Signature is valid\n");
     }
 
+    free(sig);
+    sig = NULL;
+    sig_len = 0;
+
+
+    printf("call ecdsa_prime256v1_signhash ...\n");
+    unsigned char hash[32] = {0};
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, "hello, world", strlen("hello, world"));
+    EVP_DigestFinal_ex(ctx, hash, NULL);
+    EVP_MD_CTX_free(ctx);
+
+    ret = call_ecdsa_prime256v1_signhash(hash, sizeof(hash),
+        privkey, privkey_len, &sig, &sig_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecdsa_prime256v1_signhash failed\n");
+        return -1;
+    }
+    printf("Signature (%d bytes):\n", sig_len);
+    for (int i = 0; i < sig_len; i++) {
+        printf("%02X", sig[i]);
+    }
+    printf("\n");
+
+    ret = call_ecdsa_prime256v1_verifyhash(hash, sizeof(hash),
+        sig, sig_len, pubkey, pubkey_len);
+    if (ret != 0) {
+        printf("Signature is invalid\n");
+    } else {
+        printf("Signature is valid\n");
+    }
 
     free(privkey);
     free(pubkey);
