@@ -10,6 +10,7 @@
 #include <openssl/err.h>
 #include <openssl/kdf.h>
 #include <openssl/core_names.h>
+#include <openssl/hmac.h>
 
 /**
  * ECIES 实现
@@ -168,6 +169,10 @@ int call_ecies_KDF(const char *KDF, const char *hash_alg,
     ret = 0;
 
 out:
+    if (key_material) {
+        OPENSSL_cleanse(key_material, key_len); // 安全清除敏感数据
+        free(key_material);
+    }
     if (kdf) {
         EVP_KDF_free(kdf);
     }
@@ -206,6 +211,7 @@ int call_ecies_derive_key_v1(EVP_PKEY *privkey, EVP_PKEY *pubkey,
     ret = 0;
 out:
     if (shared_secret) {
+        OPENSSL_cleanse(shared_secret, shared_secret_len); // 安全清除敏感数据
         free(shared_secret);
     }
     return ret;
@@ -277,10 +283,260 @@ out:
         EVP_PKEY_CTX_free(pctx);
     }
     if (key_material) {
+        OPENSSL_cleanse(key_material, key_len); // 安全清除敏感数据
         free(key_material);
     }
     return ret;
 }
+
+// 在传统ECIES中，使用对称加密算法（如AES）对消息进行加密，如AES-CBC或AES-CTR
+// 使用MAC算法（如HMAC-SHA256）对密文进行消息认证
+/**
+ *
+ * @param cipher_alg 对称加密算法
+ * @param key 输入的对称加密密钥
+ * @param iv 输入的初始向量
+ * @param plaintext 输入的明文
+ * @param plaintext_len 输入的明文长度
+ * @param ciphertext 输出的密文
+ * @param ciphertext_len 输出的密文长度
+ * @return 0成功，非0失败
+ */
+int call_ecies_symm_encrypt(const char *cipher_alg,
+                            unsigned char *key, unsigned char *iv,
+                            const unsigned char *plaintext, int plaintext_len,
+                            unsigned char **ciphertext, int *ciphertext_len) {
+    int ret = 0;
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *ctx = NULL;
+    int len = 0;
+    int ciphertext_buffer_len = 0;
+    int final_len = 0;
+
+    // 1. Fetch the cipher
+    cipher = EVP_CIPHER_fetch(NULL, cipher_alg, NULL);
+    if (!cipher) {
+        fprintf(stderr, "EVP_CIPHER_fetch failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 2. Create and initialize the context
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        fprintf(stderr, "EVP_CIPHER_CTX_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 3. Initialize the encryption operation
+    if (EVP_EncryptInit_ex(ctx, cipher, NULL, key, iv) != 1) {
+        fprintf(stderr, "EVP_EncryptInit_ex failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 4. judge cipher alg to set padding, if contains "CBC", enable padding
+    if (strstr(cipher_alg, "CBC")) {
+        EVP_CIPHER_CTX_set_padding(ctx, 1);
+        ciphertext_buffer_len = (plaintext_len + EVP_CIPHER_block_size(cipher)) / EVP_CIPHER_block_size(cipher) * EVP_CIPHER_block_size(cipher);
+        *ciphertext = (unsigned char *)malloc(ciphertext_buffer_len);
+        if (!*ciphertext) {
+            fprintf(stderr, "malloc for ciphertext failed\n");
+            ret = -1;
+            goto out;
+        }
+        memset(*ciphertext, 0, ciphertext_buffer_len);
+    } else {
+        EVP_CIPHER_CTX_set_padding(ctx, 0);
+        // 为非CBC模式也分配内存
+        *ciphertext = (unsigned char *)malloc(plaintext_len);
+        if (!*ciphertext) {
+            fprintf(stderr, "malloc for ciphertext failed\n");
+            ret = -1;
+            goto out;
+        }
+        memset(*ciphertext, 0, plaintext_len);
+    }
+
+    // 5. Provide the message to be encrypted, and obtain the encrypted output
+    if (EVP_EncryptUpdate(ctx, *ciphertext, &len, plaintext, plaintext_len) != 1) {
+        fprintf(stderr, "EVP_EncryptUpdate failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    *ciphertext_len = len;
+    // 6. Finalize the encryption
+    if (EVP_EncryptFinal_ex(ctx, *ciphertext + len, &final_len) != 1) {
+        fprintf(stderr, "EVP_EncryptFinal_ex failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    *ciphertext_len += final_len;
+
+    ret = 0;
+out:
+    if (cipher) {
+        EVP_CIPHER_free(cipher);
+    }
+    if (ctx) {
+        EVP_CIPHER_CTX_free(ctx);
+    }
+    // 在错误情况下释放已分配的ciphertext
+    if (ret != 0 && *ciphertext) {
+        free(*ciphertext);
+        *ciphertext = NULL;
+    }
+    return ret;
+}
+
+
+int call_ecies_symm_decrypt(const char *cipher_alg,
+                            unsigned char *key, unsigned char *iv,
+                            const unsigned char *ciphertext, int ciphertext_len,
+                            unsigned char **plaintext, int *plaintext_len) {
+    int ret = 0;
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *ctx = NULL;
+    int len = 0;
+    int final_len = 0;
+
+    // 1. Fetch the cipher
+    cipher = EVP_CIPHER_fetch(NULL, cipher_alg, NULL);
+    if (!cipher) {
+        fprintf(stderr, "EVP_CIPHER_fetch failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 2. Create and initialize the context
+    ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        fprintf(stderr, "EVP_CIPHER_CTX_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 3. Initialize the decryption operation
+    if (EVP_DecryptInit_ex(ctx, cipher, NULL, key, iv) != 1) {
+        fprintf(stderr, "EVP_DecryptInit_ex failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 4. judge cipher alg to set padding, if contains "CBC", enable padding
+    if (strstr(cipher_alg, "CBC")) {
+        EVP_CIPHER_CTX_set_padding(ctx, 1);
+    } else {
+        EVP_CIPHER_CTX_set_padding(ctx, 0);
+    }
+
+    *plaintext = (unsigned char *)malloc(ciphertext_len);
+    if (!*plaintext) {
+        fprintf(stderr, "malloc for plaintext failed\n");
+        ret = -1;
+        goto out;
+    }
+    memset(*plaintext, 0, ciphertext_len);
+
+    // 5. Provide the message to be decrypted, and obtain the plaintext output
+    if (EVP_DecryptUpdate(ctx, *plaintext, &len, ciphertext, ciphertext_len) != 1) {
+        fprintf(stderr, "EVP_DecryptUpdate failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    *plaintext_len = len;
+
+    // 6. Finalize the decryption
+    if (EVP_DecryptFinal_ex(ctx, *plaintext + len, &final_len) != 1) {
+        fprintf(stderr, "EVP_DecryptFinal_ex failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    *plaintext_len += final_len;
+    ret = 0;
+out:
+    if (cipher) {
+        EVP_CIPHER_free(cipher);
+    }
+    if (ctx) {
+        EVP_CIPHER_CTX_free(ctx);
+    }
+    if (ret != 0 && *plaintext) {
+        free(*plaintext);
+        *plaintext = NULL;
+    }
+    return ret;
+}
+
+
+// 计算HMAC
+int call_ecies_hmac(const char *hash_alg,
+                     unsigned char *key, int key_len,
+                     const unsigned char *data, int data_len,
+                     unsigned char **mac, int *mac_len) {
+    int ret = 0;
+    EVP_MD *md = NULL;
+    HMAC_CTX *ctx = NULL;
+    unsigned int len = 0;
+
+    // 1. Fetch the digest
+    md = EVP_MD_fetch(NULL, hash_alg, NULL);
+    if (!md) {
+        fprintf(stderr, "EVP_MD_fetch failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 2. Create and initialize the HMAC context
+    ctx = HMAC_CTX_new();
+    if (!ctx) {
+        fprintf(stderr, "HMAC_CTX_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 3. Initialize the HMAC operation
+    if (1 != HMAC_Init_ex(ctx, key, key_len, md, NULL)) {
+        fprintf(stderr, "HMAC_Init_ex failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 4. Provide the data to be hashed
+    if (1 != HMAC_Update(ctx, data, data_len)) {
+        fprintf(stderr, "HMAC_Update failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 5. Finalize the HMAC operation
+    *mac = (unsigned char *)malloc(EVP_MD_get_size(md));
+    if (!*mac) {
+        fprintf(stderr, "malloc for mac failed\n");
+        ret = -1;
+        goto out;
+    }
+    if (1 != HMAC_Final(ctx, *mac, &len)) {
+        fprintf(stderr, "HMAC_Final failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        free(*mac);
+        *mac = NULL;
+        ret = -1;
+        goto out;
+    }
+    *mac_len = len;
+
+    ret = 0;
+out:
+    if (md) {
+        EVP_MD_free(md);
+    }
+    if (ctx) {
+        HMAC_CTX_free(ctx);
+    }
+    return ret;
+}
+
 
 int call_ecies_prime256v1_genkey(unsigned char **pubkey, int *pubkey_len,
                                  unsigned char **privkey, int *privkey_len) {
@@ -399,6 +655,18 @@ out:
         // 是否需要在这里释放 EC_KEY 取决于 EVP_PKEY_get1_EC_KEY 的实现，可能pkey被释放时会自动释放eckey
         EC_KEY_free(eckey);
     }
+    // 错误时清理已分配的内存
+    if (ret != 0) {
+        if (*privkey) {
+            OPENSSL_cleanse(*privkey, *privkey_len); // 安全清除私钥
+            free(*privkey);
+            *privkey = NULL;
+        }
+        if (*pubkey) {
+            free(*pubkey);
+            *pubkey = NULL;
+        }
+    }
     return ret;
 }
 
@@ -406,11 +674,163 @@ int call_ecies_prime256v1_encrypt(const unsigned char *plaintext, int plaintext_
     const unsigned char *pubkey, int pubkey_len,
     unsigned char **ciphertext, int *ciphertext_len) {
     int ret = 0;
+    // 测试使用，对称算法固定AES-128-CBC
+    // HMAC算法固定HMAC-SHA256
+    const char *cipher_alg = "AES-128-CBC";
+    const char *hash_alg = "SHA256";
+    unsigned char enc_key[16] = { 0 }; // AES-128
+    unsigned char mac_key[16] = { 0 }; // HMAC-SHA256
+    unsigned char iv[16] = { 0 };      // AES block size
+    unsigned char *shared_secret = NULL;
+    size_t shared_secret_len = 0;
+    unsigned char *ephemeral_pubkey = NULL;
+    int ephemeral_pubkey_len = 0;
+    unsigned char *symm_ciphertext = NULL;
+    int symm_ciphertext_len = 0;
+    unsigned char *mac = NULL;
+    int mac_len = 0;
+    char *p = NULL;
 
+    *ciphertext = malloc(sizeof(ECIES_Ciphertext));
+    if (!*ciphertext) {
+        fprintf(stderr, "malloc for ciphertext failed\n");
+        ret = -1;
+        goto out;
+    }
+    memset(*ciphertext, 0, sizeof(ECIES_Ciphertext));
+    *ciphertext_len = sizeof(ECIES_Ciphertext);
+
+    // 1. 生成临时密钥对
+    unsigned char *ephemeral_privkey = NULL;
+    int ephemeral_privkey_len = 0;
+    EVP_PKEY *ephemeral_priv = NULL, *peer_pub = NULL;
+    EC_KEY *ec_peer_pubkey = NULL, *ec_ephemeral_privkey = NULL;
+    ret = call_ecies_prime256v1_genkey(&ephemeral_pubkey, &ephemeral_pubkey_len,
+                                       &ephemeral_privkey, &ephemeral_privkey_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_sm2p256v1_genkey failed\n");
+        goto out;
+    }
+    // 1.1 将临时公钥数据配置到结构体中
+    ((ECIES_Ciphertext *)(*ciphertext))->ephemeral_pubkey = ephemeral_pubkey;
+    ((ECIES_Ciphertext *)(*ciphertext))->ephemeral_pubkey_len = ephemeral_pubkey_len;
+
+    // 2. 从字节加载参数中的公钥和临时私钥
+    p = ephemeral_privkey;
+    ec_ephemeral_privkey = d2i_ECPrivateKey(NULL, (const unsigned char **)&p, ephemeral_privkey_len);
+    if (!ec_ephemeral_privkey) {
+        fprintf(stderr, "d2i_ECPrivateKey failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    ephemeral_priv = EVP_PKEY_new();
+    if (!ephemeral_priv) {
+        fprintf(stderr, "EVP_PKEY_new failed\n");
+        ret = -1;
+        goto out;
+    }
+    if (EVP_PKEY_set1_EC_KEY(ephemeral_priv, ec_ephemeral_privkey) != 1) {
+        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    p = (char *)pubkey;
+    ec_peer_pubkey = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec_peer_pubkey) {
+        fprintf(stderr, "EC_KEY_new_by_curve_name failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    if (EC_KEY_oct2key(ec_peer_pubkey, pubkey, pubkey_len, NULL) != 1) {
+        fprintf(stderr, "EC_KEY_oct2key failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    peer_pub = EVP_PKEY_new();
+    if (!peer_pub) {
+        fprintf(stderr, "EVP_PKEY_new failed\n");
+        ret = -1;
+        goto out;
+    }
+    if (EVP_PKEY_set1_EC_KEY(peer_pub, ec_peer_pubkey) != 1) {
+        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    // 3. ECDH密钥交换，生成共享密钥
+    ret = call_ecies_ECDH(ephemeral_priv, peer_pub, &shared_secret, &shared_secret_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_ECDH failed\n");
+        goto out;
+    }
+
+    // 4. KDF密钥派生，生成加密密钥和MAC密钥
+    ret = call_ecies_KDF("X963KDF", hash_alg,
+                         shared_secret, shared_secret_len,
+                         NULL, 0,
+                         sizeof(enc_key), enc_key,
+                         sizeof(mac_key), mac_key);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_KDF failed\n");
+        goto out;
+    }
+
+    // 5. 对消息进行对称加密
+    ret = call_ecies_symm_encrypt(cipher_alg, enc_key, iv,
+                                  plaintext, plaintext_len,
+                                  &symm_ciphertext, &symm_ciphertext_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_symm_encrypt failed\n");
+        goto out;
+    }
+    // 5.1 将对称加密的密文配置到结构体中
+    ((ECIES_Ciphertext *)(*ciphertext))->ciphertext = symm_ciphertext;
+    ((ECIES_Ciphertext *)(*ciphertext))->ciphertext_len = symm_ciphertext_len;
+
+    // 6. 对密文进行HMAC计算
+    ret = call_ecies_hmac(hash_alg, mac_key, sizeof(mac_key),
+                          symm_ciphertext, symm_ciphertext_len,
+                          &mac, &mac_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_hmac failed\n");
+        goto out;
+    }
+    // 6.1 将HMAC值配置到结构体中
+    ((ECIES_Ciphertext *)(*ciphertext))->mac = mac;
+    ((ECIES_Ciphertext *)(*ciphertext))->mac_len = mac_len;
 
     ret = 0;
-
 out:
+    if (peer_pub) {
+        EVP_PKEY_free(peer_pub);
+    }
+    if (ec_peer_pubkey) {
+        EC_KEY_free(ec_peer_pubkey);
+    }
+    if (ephemeral_priv) {
+        EVP_PKEY_free(ephemeral_priv);
+    }
+    if (ec_ephemeral_privkey) {
+        EC_KEY_free(ec_ephemeral_privkey);
+    }
+    if (ephemeral_privkey) {
+        OPENSSL_cleanse(ephemeral_privkey, ephemeral_privkey_len); // 安全清除私钥
+        free(ephemeral_privkey);
+    }
+    if (shared_secret) {
+        OPENSSL_cleanse(shared_secret, shared_secret_len); // 安全清除共享密钥
+        free(shared_secret);
+    }
+    if (ret != 0 && *ciphertext) {
+        free(*ciphertext);
+        *ciphertext = NULL;
+        *ciphertext_len = 0;
+    }
+    if (ret != 0 && mac) {
+        free(mac);
+    }
     return ret;
 }
 
@@ -419,12 +839,134 @@ int call_ecies_prime256v1_decrypt(const unsigned char *ciphertext, int ciphertex
     const unsigned char *privkey, int privkey_len,
     unsigned char **plaintext, int *plaintext_len) {
     int ret = 0;
+    // 测试使用，对称算法固定AES-128-CBC
+    // HMAC算法固定HMAC-SHA256
+    const char *cipher_alg = "AES-128-CBC";
+    const char *hash_alg = "SHA256";
+    unsigned char enc_key[16] = { 0 }; // AES-128
+    unsigned char mac_key[16] = { 0 }; // HMAC-SHA256
+    unsigned char iv[16] = { 0 };      // AES block size
+    unsigned char *shared_secret = NULL;
+    size_t shared_secret_len = 0;
+    unsigned char *symm_ciphertext = NULL;
+    int symm_ciphertext_len = 0;
+    unsigned char *mac = NULL;
+    int mac_len = 0;
+    unsigned char *calculated_mac = NULL;
+    int calculated_mac_len = 0;
+    char *p = NULL;
+    ECIES_Ciphertext *ecies_ct = (ECIES_Ciphertext *)ciphertext;
+    EVP_PKEY *priv = NULL, *ephemeral_pub = NULL;
+    EC_KEY *ec_privkey = NULL, *ec_ephemeral_pubkey = NULL;
 
+    // 1. 从字节加载参数中的私钥和临时公钥
+    p = (char *)privkey;
+    ec_privkey = d2i_ECPrivateKey(NULL, (const unsigned char **)&p, privkey_len);
+    if (!ec_privkey) {
+        fprintf(stderr, "d2i_ECPrivateKey failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    priv = EVP_PKEY_new();
+    if (!priv) {
+        fprintf(stderr, "EVP_PKEY_new failed\n");
+        ret = -1;
+        goto out;
+    }
+    if (EVP_PKEY_set1_EC_KEY(priv, ec_privkey) != 1) {
+        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    ec_ephemeral_pubkey = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
+    if (!ec_ephemeral_pubkey) {
+        fprintf(stderr, "EC_KEY_new_by_curve_name failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    if (EC_KEY_oct2key(ec_ephemeral_pubkey, ecies_ct->ephemeral_pubkey, ecies_ct->ephemeral_pubkey_len, NULL) != 1) {
+        fprintf(stderr, "EC_KEY_oct2key failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    ephemeral_pub = EVP_PKEY_new();
+    if (!ephemeral_pub) {
+        fprintf(stderr, "EVP_PKEY_new failed\n");
+        ret = -1;
+        goto out;
+    }
+    if (EVP_PKEY_set1_EC_KEY(ephemeral_pub, ec_ephemeral_pubkey) != 1) {
+        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    symm_ciphertext = ecies_ct->ciphertext;
+    symm_ciphertext_len = ecies_ct->ciphertext_len;
+    mac = ecies_ct->mac;
+    mac_len = ecies_ct->mac_len;
+
+    // 2. ECDH密钥交换，生成共享密钥
+    ret = call_ecies_ECDH(priv, ephemeral_pub, &shared_secret, &shared_secret_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_ECDH failed\n");
+        goto out;
+    }
+
+    // 3. KDF密钥派生，生成加密密钥和MAC密钥
+    ret = call_ecies_KDF("X963KDF", hash_alg,
+                         shared_secret, shared_secret_len,
+                         NULL, 0,
+                         sizeof(enc_key), enc_key,
+                         sizeof(mac_key), mac_key);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_KDF failed\n");
+        goto out;
+    }
+
+    // 4. 计算HMAC值，并与接收到的HMAC值进行比较
+    ret = call_ecies_hmac(hash_alg, mac_key, sizeof(mac_key),
+                          symm_ciphertext, symm_ciphertext_len,
+                          &calculated_mac, &calculated_mac_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_hmac failed\n");
+        goto out;
+    }
+    if (mac_len != calculated_mac_len || memcmp(mac, calculated_mac, mac_len) != 0) {
+        fprintf(stderr, "HMAC verification failed\n");
+        ret = -1;
+        goto out;
+    }
+    free(calculated_mac);
+    calculated_mac = NULL;
+    calculated_mac_len = 0;
+
+    // 5. 对密文进行对称解密
+    ret = call_ecies_symm_decrypt(cipher_alg, enc_key, iv,
+                                  symm_ciphertext, symm_ciphertext_len,
+                                  plaintext, plaintext_len);
+    if (ret != 0) {
+        fprintf(stderr, "call_ecies_symm_decrypt failed\n");
+        goto out;
+    }
 
     ret = 0;
-
 out:
-
+    if (ec_privkey) {
+        EC_KEY_free(ec_privkey);
+    }
+    if (priv) {
+        EVP_PKEY_free(priv);
+    }
+    if (ec_ephemeral_pubkey) {
+        EC_KEY_free(ec_ephemeral_pubkey);
+    }
+    if (ephemeral_pub) {
+        EVP_PKEY_free(ephemeral_pub);
+    }
+    if (shared_secret) {
+        OPENSSL_cleanse(shared_secret, shared_secret_len); // 安全清除共享密钥
+        free(shared_secret);
+    }
     return ret;
 }
 
@@ -439,96 +981,99 @@ int main(int argc, char *argv[]) {
 
     // test drive key
     EVP_PKEY *priv = NULL, *pub = NULL;
-    unsigned char enc_key[16]; // AES-128
-    unsigned char mac_key[16]; // HMAC-SHA256
-    unsigned char *p = NULL;
-    EC_KEY *ec_pubkey = NULL, *ec_privkey = NULL;
-    ec_pubkey = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
 
-    priv = EVP_PKEY_new();
-    pub = EVP_PKEY_new();
-    if (!priv || !pub) {
-        fprintf(stderr, "EVP_PKEY_new failed\n");
-        ret = -1;
-        goto out;
-    }
+    if (0) {
+        unsigned char enc_key[16]; // AES-128
+        unsigned char mac_key[16]; // HMAC-SHA256
+        unsigned char *p = NULL;
+        EC_KEY *ec_pubkey = NULL, *ec_privkey = NULL;
+        ec_pubkey = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
 
-    // 1. 生成密钥对
-    ret = call_ecies_prime256v1_genkey(&pubkey, &pubkey_len, &privkey, &privkey_len);
-    if (ret != 0) {
-        fprintf(stderr, "call_ecies_sm2p256v1_genkey failed\n");
-        goto out;
-    }
+        priv = EVP_PKEY_new();
+        pub = EVP_PKEY_new();
+        if (!priv || !pub) {
+            fprintf(stderr, "EVP_PKEY_new failed\n");
+            ret = -1;
+            goto out;
+        }
 
-    // 2. 从字节加载公钥和私钥
-    p = privkey;
-    ec_privkey = d2i_ECPrivateKey(NULL, &p, privkey_len);
-    if (!ec_privkey) {
-        fprintf(stderr, "d2i_AutoPrivateKey failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        ret = -1;
-        goto out;
-    }
-    if (EVP_PKEY_set1_EC_KEY(priv, ec_privkey) != 1) {
-        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        ret = -1;
-        goto out;
-    }
+        // 1. 生成密钥对
+        ret = call_ecies_prime256v1_genkey(&pubkey, &pubkey_len, &privkey, &privkey_len);
+        if (ret != 0) {
+            fprintf(stderr, "call_ecies_sm2p256v1_genkey failed\n");
+            goto out;
+        }
 
-    if (EC_KEY_oct2key(ec_pubkey, pubkey, pubkey_len, NULL) != 1) {
-        fprintf(stderr, "EC_KEY_oct2key failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        ret = -1;
-        goto out;
-    }
-    if (EVP_PKEY_set1_EC_KEY(pub, ec_pubkey) != 1) {
-        fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
-        ret = -1;
-        goto out;
-    }
+        // 2. 从字节加载公钥和私钥
+        p = privkey;
+        ec_privkey = d2i_ECPrivateKey(NULL, &p, privkey_len);
+        if (!ec_privkey) {
+            fprintf(stderr, "d2i_AutoPrivateKey failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            ret = -1;
+            goto out;
+        }
+        if (EVP_PKEY_set1_EC_KEY(priv, ec_privkey) != 1) {
+            fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            ret = -1;
+            goto out;
+        }
 
-
-    // 3. 派生密钥 v1
-    ret = call_ecies_derive_key_v1(priv, pub,
-                           "X963KDF", "SHA256",
-                           sizeof(enc_key), enc_key,
-                           sizeof(mac_key), mac_key);
-    if (ret != 0) {
-        fprintf(stderr, "call_ecies_derive_key_v1 failed\n");
-        goto out;
-    }
-    printf("Derived Encryption Key (v1):\n");
-    for (int i = 0; i < sizeof(enc_key); i++) {
-        printf("%02X", enc_key[i]);
-    }
-    printf("\n");
-    printf("Derived MAC Key (v1):\n");
-    for (int i = 0; i < sizeof(mac_key); i++) {
-        printf("%02X", mac_key[i]);
-    }
-    printf("\n");
-
-    // 4. 派生密钥 v2
-    unsigned char *otherinfo;
-    ret = call_ecies_derive_key_v2(priv, pub,
-                           otherinfo, 0,
-                           sizeof(enc_key), enc_key,
-                           sizeof(mac_key), mac_key);
-    if (ret != 0) {
-        fprintf(stderr, "call_ecies_derive_key_v2 failed\n");
-        goto out;
-    }
-    printf("Derived Encryption Key (v2):\n");
-    for (int i = 0; i < sizeof(enc_key); i++) {
-        printf("%02X", enc_key[i]);
-    }
-    printf("\n");
-    printf("Derived MAC Key (v2):\n");
-    for (int i = 0; i < sizeof(mac_key); i++) {
-        printf("%02X", mac_key[i]);
-    }
-    printf("\n");
+        if (EC_KEY_oct2key(ec_pubkey, pubkey, pubkey_len, NULL) != 1) {
+            fprintf(stderr, "EC_KEY_oct2key failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            ret = -1;
+            goto out;
+        }
+        if (EVP_PKEY_set1_EC_KEY(pub, ec_pubkey) != 1) {
+            fprintf(stderr, "EVP_PKEY_set1_EC_KEY failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            ret = -1;
+            goto out;
+        }
 
 
-    if (0){
+        // 3. 派生密钥 v1
+        ret = call_ecies_derive_key_v1(priv, pub,
+                                       "X963KDF", "SHA256",
+                                       sizeof(enc_key), enc_key,
+                                       sizeof(mac_key), mac_key);
+        if (ret != 0) {
+            fprintf(stderr, "call_ecies_derive_key_v1 failed\n");
+            goto out;
+        }
+        printf("Derived Encryption Key (v1):\n");
+        for (int i = 0; i < sizeof(enc_key); i++) {
+            printf("%02X", enc_key[i]);
+        }
+        printf("\n");
+        printf("Derived MAC Key (v1):\n");
+        for (int i = 0; i < sizeof(mac_key); i++) {
+            printf("%02X", mac_key[i]);
+        }
+        printf("\n");
+
+        // 4. 派生密钥 v2
+        unsigned char *otherinfo;
+        ret = call_ecies_derive_key_v2(priv, pub,
+                                       otherinfo, 0,
+                                       sizeof(enc_key), enc_key,
+                                       sizeof(mac_key), mac_key);
+        if (ret != 0) {
+            fprintf(stderr, "call_ecies_derive_key_v2 failed\n");
+            goto out;
+        }
+        printf("Derived Encryption Key (v2):\n");
+        for (int i = 0; i < sizeof(enc_key); i++) {
+            printf("%02X", enc_key[i]);
+        }
+        printf("\n");
+        printf("Derived MAC Key (v2):\n");
+        for (int i = 0; i < sizeof(mac_key); i++) {
+            printf("%02X", mac_key[i]);
+        }
+        printf("\n");
+    }
+
+
+    if (1){
         ret = call_ecies_prime256v1_genkey(&pubkey, &pubkey_len, &privkey, &privkey_len);
         if (ret != 0) {
             fprintf(stderr, "call_ecies_sm2p256v1_genkey failed\n");
@@ -576,6 +1121,9 @@ out:
         free(privkey);
     }
     if (ciphertext) {
+        free(((ECIES_Ciphertext *)ciphertext)->ephemeral_pubkey);
+        free(((ECIES_Ciphertext *)ciphertext)->ciphertext);
+        free(((ECIES_Ciphertext *)ciphertext)->mac);
         free(ciphertext);
     }
     if (decryptedtext) {
