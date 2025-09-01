@@ -13,5 +13,6 @@ add_executable(DebugOpenSSL main.c)
 
 add_subdirectory(test_alg/asymciphers)
 add_subdirectory(test_alg/ciphers)
+add_subdirectory(test_alg/digests)
 add_subdirectory(test_alg/macs)
 add_subdirectory(test_alg/signatures)
