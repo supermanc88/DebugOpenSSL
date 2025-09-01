@@ -59,7 +59,7 @@ out:
 }
 
 
-int call_digest_sha3_truncate_length(const char *md_string, const char *msg,
+int call_digest_shake_truncate_length(const char *md_string, const char *msg,
     size_t truncate_len,
     unsigned char *md_value, unsigned int *md_len) {
     int ret = 0;
@@ -168,7 +168,7 @@ int main(int argc, char *argv[]) {
         memset(md_value, 0, sizeof(md_value));
         md_len = 0;
 
-        ret = call_digest_sha3_truncate_length(md_vec->md_string, msg, md_vec->md_len, md_value, &md_len);
+        ret = call_digest_shake_truncate_length(md_vec->md_string, msg, md_vec->md_len, md_value, &md_len);
         if (ret != 0) {
             fprintf(stderr, "call_digest_sha3_truncate_length failed for %s\n", md_vec->md_string);
             goto out;
