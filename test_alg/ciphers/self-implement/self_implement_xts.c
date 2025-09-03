@@ -120,14 +120,106 @@ typedef u64 u64_a1;
 asm ("rev %0,%1"                \
 : "=r"(ret_) : "r"(x)); ret_;   })
 
+#define MBEDTLS_IS_BIG_ENDIAN 0
 
-static inline void xts_mul_alpha_le_u64(uint64_t T[2]) {
-    // T[0] = 低 64 位, T[1] = 高 64 位（小端）
-    uint64_t t0 = T[0], t1 = T[1];
-    unsigned carry = (unsigned)(t1 >> 63);  // 被移出的最高位
-    T[1] = (t1 << 1) | (t0 >> 63);
-    T[0] = (t0 << 1);
-    if (carry) T[0] ^= 0x87u;               // 异或到“最低字节”，小端可直接 ^0x87
+static inline uint64_t mbedtls_get_unaligned_uint64(const void *p)
+{
+    uint64_t r;
+    memcpy(&r, p, sizeof(r));
+    return r;
+}
+
+static inline void mbedtls_put_unaligned_uint64(void *p, uint64_t x)
+{
+    memcpy(p, &x, sizeof(x));
+}
+
+
+#if defined(__clang__) && defined(__has_builtin)
+#if __has_builtin(__builtin_bswap16) && !defined(MBEDTLS_BSWAP16)
+#define MBEDTLS_BSWAP16 __builtin_bswap16
+#endif /* __has_builtin(__builtin_bswap16) */
+#if __has_builtin(__builtin_bswap32) && !defined(MBEDTLS_BSWAP32)
+#define MBEDTLS_BSWAP32 __builtin_bswap32
+#endif /* __has_builtin(__builtin_bswap32) */
+#if __has_builtin(__builtin_bswap64) && !defined(MBEDTLS_BSWAP64)
+#define MBEDTLS_BSWAP64 __builtin_bswap64
+#endif /* __has_builtin(__builtin_bswap64) */
+#endif /* defined(__clang__) && defined(__has_builtin) */
+
+#if !defined(MBEDTLS_BSWAP16)
+static inline uint16_t mbedtls_bswap16(uint16_t x)
+{
+    return
+        (x & 0x00ff) << 8 |
+        (x & 0xff00) >> 8;
+}
+#define MBEDTLS_BSWAP16 mbedtls_bswap16
+#endif /* !defined(MBEDTLS_BSWAP16) */
+
+#if !defined(MBEDTLS_BSWAP32)
+static inline uint32_t mbedtls_bswap32(uint32_t x)
+{
+    return
+        (x & 0x000000ff) << 24 |
+        (x & 0x0000ff00) <<  8 |
+        (x & 0x00ff0000) >>  8 |
+        (x & 0xff000000) >> 24;
+}
+#define MBEDTLS_BSWAP32 mbedtls_bswap32
+#endif /* !defined(MBEDTLS_BSWAP32) */
+
+#if !defined(MBEDTLS_BSWAP64)
+static inline uint64_t mbedtls_bswap64(uint64_t x)
+{
+    return
+        (x & 0x00000000000000ffULL) << 56 |
+        (x & 0x000000000000ff00ULL) << 40 |
+        (x & 0x0000000000ff0000ULL) << 24 |
+        (x & 0x00000000ff000000ULL) <<  8 |
+        (x & 0x000000ff00000000ULL) >>  8 |
+        (x & 0x0000ff0000000000ULL) >> 24 |
+        (x & 0x00ff000000000000ULL) >> 40 |
+        (x & 0xff00000000000000ULL) >> 56;
+}
+#define MBEDTLS_BSWAP64 mbedtls_bswap64
+#endif /* !defined(MBEDTLS_BSWAP64) */
+
+
+
+
+#define MBEDTLS_GET_UINT64_LE(data, offset)                                \
+((MBEDTLS_IS_BIG_ENDIAN)                                               \
+? MBEDTLS_BSWAP64(mbedtls_get_unaligned_uint64((data) + (offset))) \
+: mbedtls_get_unaligned_uint64((data) + (offset))                  \
+)
+
+#define MBEDTLS_PUT_UINT64_LE(n, data, offset)                                   \
+{                                                                            \
+    if (MBEDTLS_IS_BIG_ENDIAN)                                               \
+    {                                                                        \
+        mbedtls_put_unaligned_uint64((data) + (offset), MBEDTLS_BSWAP64((uint64_t) (n))); \
+    }                                                                        \
+    else                                                                     \
+    {                                                                        \
+        mbedtls_put_unaligned_uint64((data) + (offset), (uint64_t) (n));     \
+    }                                                                        \
+}
+
+
+static inline void mbedtls_gf128mul_x_ble(unsigned char r[16],
+                                          const unsigned char x[16])
+{
+    uint64_t a, b, ra, rb;
+
+    a = MBEDTLS_GET_UINT64_LE(x, 0);
+    b = MBEDTLS_GET_UINT64_LE(x, 8);
+
+    ra = (a << 1)  ^ 0x0087 >> (8 - ((b >> 63) << 3));
+    rb = (a >> 63) | (b << 1);
+
+    MBEDTLS_PUT_UINT64_LE(ra, r, 0);
+    MBEDTLS_PUT_UINT64_LE(rb, r, 8);
 }
 
 
@@ -227,12 +319,13 @@ int xts_encrypt(
 
         // GF(2^128)上的乘法
         if (0) {
-            unsigned int carry, res;
-
-            res = 0x87 & (((int)tweak.d[3]) >> 31);
-            carry = (unsigned int)(tweak.u[0] >> 63);
-            tweak.u[0] = (tweak.u[0] << 1) ^ res;
-            tweak.u[1] = (tweak.u[1] << 1) | carry;
+            // unsigned int carry, res;
+            //
+            // res = 0x87 & (((int)tweak.d[3]) >> 31);
+            // carry = (unsigned int)(tweak.u[0] >> 63);
+            // tweak.u[0] = (tweak.u[0] << 1) ^ res;
+            // tweak.u[1] = (tweak.u[1] << 1) | carry;
+            mbedtls_gf128mul_x_ble(tweak.c, tweak.c);
         } else {
             u8 res;
             u64 hi, lo;
@@ -367,12 +460,13 @@ int xts_decrypt(
 
         // GF(2^128)上的乘法
         if (0) {
-            unsigned int carry, res;
-
-            res = 0x87 & (((int)tweak.d[3]) >> 31);
-            carry = (unsigned int)(tweak.u[0] >> 63);
-            tweak.u[0] = (tweak.u[0] << 1) ^ res;
-            tweak.u[1] = (tweak.u[1] << 1) | carry;
+            // unsigned int carry, res;
+            //
+            // res = 0x87 & (((int)tweak.d[3]) >> 31);
+            // carry = (unsigned int)(tweak.u[0] >> 63);
+            // tweak.u[0] = (tweak.u[0] << 1) ^ res;
+            // tweak.u[1] = (tweak.u[1] << 1) | carry;
+            mbedtls_gf128mul_x_ble(tweak.c, tweak.c);
         } else {
             u8 res;
             u64 hi, lo;
@@ -412,12 +506,13 @@ int xts_decrypt(
         } tweak1;
 
         if (0) {
-            unsigned int carry, res;
-
-            res = 0x87 & (((int)tweak.d[3]) >> 31);
-            carry = (unsigned int)(tweak.u[0] >> 63);
-            tweak1.u[0] = (tweak.u[0] << 1) ^ res;
-            tweak1.u[1] = (tweak.u[1] << 1) | carry;
+            // unsigned int carry, res;
+            //
+            // res = 0x87 & (((int)tweak.d[3]) >> 31);
+            // carry = (unsigned int)(tweak.u[0] >> 63);
+            // tweak1.u[0] = (tweak.u[0] << 1) ^ res;
+            // tweak1.u[1] = (tweak.u[1] << 1) | carry;
+            mbedtls_gf128mul_x_ble(tweak.c, tweak.c);
         } else {
             u8 res;
             u64 hi, lo;
@@ -706,7 +801,7 @@ int main(int argc, char *argv[]) {
     if (declen != inlen || memcmp(in, dec, inlen) != 0) {
         fprintf(stderr, "Decrypted data does not match original\n");
         ret = -1;
-        // goto out;
+        goto out;
     }
     printf("Decrypted data matches original\n");
 
