@@ -8,3 +8,6 @@ add_executable(test_self_implement_xts
 target_link_libraries(test_self_implement_xts
 ${OPENSSL_ROOT_DIR}/libcrypto.a
 ${OPENSSL_ROOT_DIR}/libssl.a)
+
+add_executable(test_multi_on_gf
+    multi_on_gf.c)

@@ -12,6 +12,10 @@
 
 #define USE_SELF_IMPL 1
 
+// 在国标中，gf(2^128) 上的乘法是右移一位
+// 在 IEEE Std 1619-2018 中，gf(2^128) 上的乘法是左移一位
+#define USE_IEEE_STD 0
+
 
 /**
  *
@@ -31,6 +35,7 @@ int block_cipher(int enc,
     int ret = 0;
     // use SM4 in ECB mode as the underlying block cipher
     const EVP_CIPHER *cipher = EVP_sm4_ecb();
+    // const EVP_CIPHER *cipher = EVP_aes_128_ecb();
     EVP_CIPHER_CTX *ctx = NULL;
     int len = 0;
     int ciphertext_len = 0;
@@ -225,6 +230,19 @@ static inline void mbedtls_gf128mul_x_ble(unsigned char r[16],
     MBEDTLS_PUT_UINT64_LE(rb, r, 8);
 }
 
+// 假设：u[0] 为低64位，u[1] 为高64位（常见小端）
+static inline void gf_mulx_le_u64(uint64_t u[2]) {
+    // 预取最高位（移位前）
+    unsigned msb = (unsigned)((u[1] >> 63) & 1u);
+    unsigned carry = (unsigned)((u[0] >> 63) & 1u);
+
+    u[0] = (u[0] << 1);
+    u[1] = (u[1] << 1) | carry;
+
+    // 小端语义下，“最低字节”在整体的最低地址 => u[0] 的最低 8 位
+    if (msb) u[0] ^= 0x87u;
+}
+
 
 int xts_encrypt(
     unsigned char *key1, unsigned char *key2,
@@ -321,14 +339,15 @@ int xts_encrypt(
         }
 
         // GF(2^128)上的乘法
-        if (0) {
-            // unsigned int carry, res;
-            //
-            // res = 0x87 & (((int)tweak.d[3]) >> 31);
-            // carry = (unsigned int)(tweak.u[0] >> 63);
-            // tweak.u[0] = (tweak.u[0] << 1) ^ res;
-            // tweak.u[1] = (tweak.u[1] << 1) | carry;
-            mbedtls_gf128mul_x_ble(tweak.c, tweak.c);
+        if (USE_IEEE_STD) {
+            unsigned int carry, res;
+
+            res = 0x87 & (((int)tweak.d[3]) >> 31);
+            carry = (unsigned int)(tweak.u[0] >> 63);
+            tweak.u[0] = (tweak.u[0] << 1) ^ res;
+            tweak.u[1] = (tweak.u[1] << 1) | carry;
+            // mbedtls_gf128mul_x_ble(tweak.c, tweak.c);
+            // gf_mulx_le_u64(tweak.u);
         } else {
             u8 res;
             u64 hi, lo;
@@ -462,14 +481,13 @@ int xts_decrypt(
         }
 
         // GF(2^128)上的乘法
-        if (0) {
-            // unsigned int carry, res;
-            //
-            // res = 0x87 & (((int)tweak.d[3]) >> 31);
-            // carry = (unsigned int)(tweak.u[0] >> 63);
-            // tweak.u[0] = (tweak.u[0] << 1) ^ res;
-            // tweak.u[1] = (tweak.u[1] << 1) | carry;
-            mbedtls_gf128mul_x_ble(tweak.c, tweak.c);
+        if (USE_IEEE_STD) {
+            unsigned int carry, res;
+
+            res = 0x87 & (((int)tweak.d[3]) >> 31);
+            carry = (unsigned int)(tweak.u[0] >> 63);
+            tweak.u[0] = (tweak.u[0] << 1) ^ res;
+            tweak.u[1] = (tweak.u[1] << 1) | carry;
         } else {
             u8 res;
             u64 hi, lo;
@@ -508,14 +526,13 @@ int xts_decrypt(
             u8 c[16];
         } tweak1;
 
-        if (0) {
-            // unsigned int carry, res;
-            //
-            // res = 0x87 & (((int)tweak.d[3]) >> 31);
-            // carry = (unsigned int)(tweak.u[0] >> 63);
-            // tweak1.u[0] = (tweak.u[0] << 1) ^ res;
-            // tweak1.u[1] = (tweak.u[1] << 1) | carry;
-            mbedtls_gf128mul_x_ble(tweak.c, tweak.c);
+        if (USE_IEEE_STD) {
+            unsigned int carry, res;
+
+            res = 0x87 & (((int)tweak.d[3]) >> 31);
+            carry = (unsigned int)(tweak.u[0] >> 63);
+            tweak1.u[0] = (tweak.u[0] << 1) ^ res;
+            tweak1.u[1] = (tweak.u[1] << 1) | carry;
         } else {
             u8 res;
             u64 hi, lo;
@@ -595,6 +612,7 @@ int openssl_xts_encrypt(unsigned char *key,
 
     // use SM4 in XTS mode
     cipher = EVP_CIPHER_fetch(NULL, "SM4-XTS", NULL);
+    // cipher = EVP_aes_128_xts();
     if (!cipher) {
         fprintf(stderr, "Failed to get SM4-XTS cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
@@ -660,6 +678,7 @@ int openssl_xts_decrypt(unsigned char *key,
 
     // use SM4 in XTS mode
     cipher = EVP_CIPHER_fetch(NULL, "SM4-XTS", NULL);
+    // cipher = EVP_aes_128_xts();
     if (!cipher) {
         fprintf(stderr, "Failed to get SM4-XTS cipher: %s\n", ERR_error_string(ERR_get_error(), NULL));
         ret = -1;
@@ -891,7 +910,7 @@ int main(int argc, char *argv[]) {
     unsigned char key2[16] = {0};
     unsigned char key[32] = {0};
     unsigned char iv[16] = {0};
-    unsigned char in[] = "This is a test message for XTS mode encryption!";
+    unsigned char in[] = "This is a test message for XTS mode encryption.";
     size_t inlen = strlen((char *)in);
     unsigned char out[128] = {0};
     size_t outlen = 0;
