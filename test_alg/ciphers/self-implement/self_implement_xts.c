@@ -10,6 +10,9 @@
 #include <openssl/err.h>
 
 
+#define USE_SELF_IMPL 1
+
+
 /**
  *
  * @param enc 0 for decrypt, 1 for encrypt
@@ -708,6 +711,178 @@ out:
     }
     return ret;
 }
+#if defined(__has_builtin)
+#define MBEDTLS_HAS_BUILTIN(x) __has_builtin(x)
+#else
+#define MBEDTLS_HAS_BUILTIN(x) 0
+#endif
+
+#if MBEDTLS_HAS_BUILTIN(__builtin_expect)
+#define MBEDTLS_LIKELY(x)       __builtin_expect(!!(x), 1)
+#define MBEDTLS_UNLIKELY(x)     __builtin_expect(!!(x), 0)
+#else
+#define MBEDTLS_LIKELY(x)       x
+#define MBEDTLS_UNLIKELY(x)     x
+#endif
+
+static inline void mbedtls_xor(unsigned char *r,
+                               const unsigned char *a,
+                               const unsigned char *b,
+                               size_t n)
+{
+    size_t i = 0;
+#if defined(MBEDTLS_EFFICIENT_UNALIGNED_ACCESS)
+#if defined(MBEDTLS_HAVE_NEON_INTRINSICS) && \
+(!(defined(MBEDTLS_COMPILER_IS_GCC) && MBEDTLS_GCC_VERSION < 70300))
+    /* Old GCC versions generate a warning here, so disable the NEON path for these compilers */
+    for (; (i + 16) <= n; i += 16) {
+        uint8x16_t v1 = vld1q_u8(a + i);
+        uint8x16_t v2 = vld1q_u8(b + i);
+        uint8x16_t x = veorq_u8(v1, v2);
+        vst1q_u8(r + i, x);
+    }
+#if defined(__IAR_SYSTEMS_ICC__)
+    /* This if statement helps some compilers (e.g., IAR) optimise out the byte-by-byte tail case
+     * where n is a constant multiple of 16.
+     * For other compilers (e.g. recent gcc and clang) it makes no difference if n is a compile-time
+     * constant, and is a very small perf regression if n is not a compile-time constant. */
+    if (n % 16 == 0) {
+        return;
+    }
+#endif
+#elif defined(MBEDTLS_ARCH_IS_X64) || defined(MBEDTLS_ARCH_IS_ARM64)
+    /* This codepath probably only makes sense on architectures with 64-bit registers */
+    for (; (i + 8) <= n; i += 8) {
+        uint64_t x = mbedtls_get_unaligned_uint64(a + i) ^ mbedtls_get_unaligned_uint64(b + i);
+        mbedtls_put_unaligned_uint64(r + i, x);
+    }
+#if defined(__IAR_SYSTEMS_ICC__)
+    if (n % 8 == 0) {
+        return;
+    }
+#endif
+#else
+    for (; (i + 4) <= n; i += 4) {
+        uint32_t x = mbedtls_get_unaligned_uint32(a + i) ^ mbedtls_get_unaligned_uint32(b + i);
+        mbedtls_put_unaligned_uint32(r + i, x);
+    }
+#if defined(__IAR_SYSTEMS_ICC__)
+    if (n % 4 == 0) {
+        return;
+    }
+#endif
+#endif
+#endif
+    for (; i < n; i++) {
+        r[i] = a[i] ^ b[i];
+    }
+}
+
+int mbedtls_crypt_xts(int mode,
+                unsigned char *key1,
+                unsigned char *key2,
+                size_t length,
+                const unsigned char data_unit[16],
+                const unsigned char *input,
+                unsigned char *output) {
+    int ret = 0;
+    size_t blocks = length / 16;
+    size_t leftover = length % 16;
+    unsigned char tweak[16];
+    unsigned char prev_tweak[16];
+    unsigned char tmp[16];
+    size_t out_len = 0;
+
+    if (mode != 1 && mode != 0) {
+        return -1;
+    }
+
+    /* Data units must be at least 16 bytes long. */
+    if (length < 16) {
+        return -1;
+    }
+
+    /* NIST SP 800-38E disallows data units larger than 2**20 blocks. */
+    if (length > (1 << 20) * 16) {
+        return -1;
+    }
+
+    /* Compute the tweak. */
+    ret = block_cipher_encrypt(key2, NULL, data_unit, 16, tweak, &out_len);
+    if (ret != 0) {
+        return ret;
+    }
+
+    while (blocks--) {
+        if (MBEDTLS_UNLIKELY(leftover && (mode == 0) && blocks == 0)) {
+            /* We are on the last block in a decrypt operation that has
+             * leftover bytes, so we need to use the next tweak for this block,
+             * and this tweak for the leftover bytes. Save the current tweak for
+             * the leftovers and then update the current tweak for use on this,
+             * the last full block. */
+            memcpy(prev_tweak, tweak, sizeof(tweak));
+            mbedtls_gf128mul_x_ble(tweak, tweak);
+        }
+
+        mbedtls_xor(tmp, input, tweak, 16);
+
+        if (mode == 1) {
+            ret = block_cipher_encrypt(key1, NULL, tmp, 16, tmp, &out_len);
+        } else {
+            ret = block_cipher_decrypt(key1, NULL, tmp, 16, tmp, &out_len);
+        }
+        if (ret != 0) {
+            return ret;
+        }
+
+        mbedtls_xor(output, tmp, tweak, 16);
+
+        /* Update the tweak for the next block. */
+        mbedtls_gf128mul_x_ble(tweak, tweak);
+
+        output += 16;
+        input += 16;
+    }
+
+    if (leftover) {
+        /* If we are on the leftover bytes in a decrypt operation, we need to
+         * use the previous tweak for these bytes (as saved in prev_tweak). */
+        unsigned char *t = mode == 0 ? prev_tweak : tweak;
+
+        /* We are now on the final part of the data unit, which doesn't divide
+         * evenly by 16. It's time for ciphertext stealing. */
+        size_t i;
+        unsigned char *prev_output = output - 16;
+
+        /* Copy ciphertext bytes from the previous block to our output for each
+         * byte of ciphertext we won't steal. */
+        for (i = 0; i < leftover; i++) {
+            output[i] = prev_output[i];
+        }
+
+        /* Copy the remainder of the input for this final round. */
+        mbedtls_xor(tmp, input, t, leftover);
+
+        /* Copy ciphertext bytes from the previous block for input in this
+         * round. */
+        mbedtls_xor(tmp + i, prev_output + i, t + i, 16 - i);
+
+        if (mode == 1) {
+            ret = block_cipher_encrypt(key1, NULL, tmp, 16, tmp, &out_len);
+        } else {
+            ret = block_cipher_decrypt(key1, NULL, tmp, 16, tmp, &out_len);
+        }
+        if (ret != 0) {
+            return ret;
+        }
+
+        /* Write the result back to the previous block, overriding the previous
+         * output we copied. */
+        mbedtls_xor(prev_output, tmp, t, 16);
+    }
+
+    return 0;
+}
 
 
 int main(int argc, char *argv[]) {
@@ -760,10 +935,19 @@ int main(int argc, char *argv[]) {
     memcpy(key + sizeof(key1), key2, sizeof(key2));
 
     // use self-implemented XTS encryption
-    if (xts_encrypt(key1, key2, iv, in, inlen, out, &outlen) != 0) {
-        fprintf(stderr, "xts_encrypt failed\n");
-        ret = -1;
-        goto out;
+    if (USE_SELF_IMPL) {
+        if (xts_encrypt(key1, key2, iv, in, inlen, out, &outlen) != 0) {
+            fprintf(stderr, "xts_encrypt failed\n");
+            ret = -1;
+            goto out;
+        }
+    } else {
+        if (mbedtls_crypt_xts(1, key1, key2, inlen, iv, in, out) != 0) {
+            fprintf(stderr, "mbedtls_crypt_xts encrypt failed\n");
+            ret = -1;
+            goto out;
+        }
+        outlen = inlen;
     }
     printf("Self-implemented XTS encryption successful, outlen=%zu\n", outlen);
     // print ciphertext in hex
@@ -838,10 +1022,19 @@ int main(int argc, char *argv[]) {
     // use self-implemented XTS decryption
     memset(dec, 0, sizeof(dec));
     declen = 0;
-    if (xts_decrypt(key1, key2, iv, out, outlen, dec, &declen) != 0) {
-        fprintf(stderr, "xts_decrypt failed\n");
-        ret = -1;
-        goto out;
+    if (USE_SELF_IMPL) {
+        if (xts_decrypt(key1, key2, iv, out, outlen, dec, &declen) != 0) {
+            fprintf(stderr, "xts_decrypt failed\n");
+            ret = -1;
+            goto out;
+        }
+    } else {
+        if (mbedtls_crypt_xts(0, key1, key2, outlen, iv, out, dec) != 0) {
+            fprintf(stderr, "mbedtls_crypt_xts decrypt failed\n");
+            ret = -1;
+            goto out;
+        }
+        declen = outlen;
     }
     printf("Self-implemented XTS decryption successful, declen=%zu\n", declen);
     // print decrypted text
