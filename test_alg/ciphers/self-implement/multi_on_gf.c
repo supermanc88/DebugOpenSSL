@@ -34,7 +34,6 @@ asm ("rev %0,%1"                \
 // 0x87 = 10000111b，对应多项式  x^7 + x^2 + x + 1
 // 最高位溢出时，需对最低字节进行异或操作
 static inline void gf_mulx_le_u64(uint64_t u[2]) {
-#if 0
     // 预取最高位（移位前）
     unsigned msb = (unsigned)((u[1] >> 63) & 1u);
     unsigned carry = (unsigned)((u[0] >> 63) & 1u);
@@ -44,7 +43,10 @@ static inline void gf_mulx_le_u64(uint64_t u[2]) {
 
     // 小端语义下，“最低字节”在整体的最低地址 => u[0] 的最低 8 位
     if (msb) u[0] ^= 0x87u;
-#else
+}
+
+// 国标的 GF(2^128) 乘以 x (即左移一位并模多项式 0xe1)
+static inline void gf_mulx_gb_u64(uint64_t u[2]) {
     u8 res;
     u64 hi, lo;
     // printf("u[0] = %016llx, u[1] = %016llx\n", u[0], u[1]);
@@ -59,13 +61,13 @@ static inline void gf_mulx_le_u64(uint64_t u[2]) {
     u[0] = (lo >> 1) | (hi << 63);
     u[1] = hi >> 1;
     if (res)
-        u[0] ^= 0xe1;
+        ((char *)(u[1]))[15] ^= 0xe1;
     hi = BSWAP8(u[0]);
     lo = BSWAP8(u[1]);
     u[0] = lo;
     u[1] = hi;
-#endif
 }
+
 
 
 int main(int argc, char *argv[]) {
@@ -103,7 +105,7 @@ int main(int argc, char *argv[]) {
     printf("\n");
 
     gf_mulx_le_u64(T0_bytes.u);
-    // gf_mulx_le_u64(T1_bytes.u);
+    gf_mulx_le_u64(T1_bytes.u);
 
     // print results
     printf("T0 * x mod p = ");

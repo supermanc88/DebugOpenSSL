@@ -20,6 +20,7 @@
 /**
  *
  * @param enc 0 for decrypt, 1 for encrypt
+ * @param cipher the cipher to use
  * @param key input key, must be 16 bytes for SM4
  * @param iv initialization vector, not used in ECB mode
  * @param in input data, must be multiple of 16 bytes
@@ -28,13 +29,13 @@
  * @param outlen length of output data
  * @return 0 on success, -1 on failure
  */
-int block_cipher(int enc,
+int block_cipher(int enc, const EVP_CIPHER *cipher,
                  unsigned char *key, unsigned char *iv,
                  unsigned char *in, size_t inlen,
                  unsigned char *out, size_t *outlen) {
     int ret = 0;
     // use SM4 in ECB mode as the underlying block cipher
-    const EVP_CIPHER *cipher = EVP_sm4_ecb();
+    // const EVP_CIPHER *cipher = EVP_sm4_ecb();
     // const EVP_CIPHER *cipher = EVP_aes_128_ecb();
     EVP_CIPHER_CTX *ctx = NULL;
     int len = 0;
@@ -105,18 +106,19 @@ out:
     return ret;
 }
 
-int block_cipher_decrypt(
+int block_cipher_decrypt(const EVP_CIPHER *cipher,
     unsigned char *key, unsigned char *iv,
     unsigned char *in, size_t inlen,
     unsigned char *out, size_t *outlen) {
-    return block_cipher(0, key, iv, in, inlen, out, outlen);
+    return block_cipher(0, cipher, key, iv, in, inlen, out, outlen);
 }
 
 int block_cipher_encrypt(
+    const EVP_CIPHER *cipher,
     unsigned char *key, unsigned char *iv,
     unsigned char *in, size_t inlen,
     unsigned char *out, size_t *outlen) {
-    return block_cipher(1, key, iv, in, inlen, out, outlen);
+    return block_cipher(1, cipher, key, iv, in, inlen, out, outlen);
 }
 
 typedef unsigned char u8;
@@ -245,6 +247,7 @@ static inline void gf_mulx_le_u64(uint64_t u[2]) {
 
 
 int xts_encrypt(
+    const EVP_CIPHER *cipher,
     unsigned char *key1, unsigned char *key2,
     unsigned char *iv,
     unsigned char *in, size_t inlen,
@@ -294,7 +297,7 @@ int xts_encrypt(
 
     // 使用key2加密tweak值
     size_t tweak_len = 0;
-    if (block_cipher_encrypt(key2, NULL, tweak.c, 16, tweak.c, &tweak_len) != 0) {
+    if (block_cipher_encrypt(cipher, key2, NULL, tweak.c, 16, tweak.c, &tweak_len) != 0) {
         fprintf(stderr, "Tweak encryption failed\n");
         ret = -1;
         goto out;
@@ -320,7 +323,7 @@ int xts_encrypt(
 
         // 使用key1加密
         size_t block_len = 0;
-        if (block_cipher_encrypt(key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
+        if (block_cipher_encrypt(cipher, key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
             fprintf(stderr, "Block encryption failed\n");
             ret = -1;
             goto out;
@@ -401,7 +404,7 @@ int xts_encrypt(
 
         // 使用key1加密
         size_t block_len = 0;
-        if (block_cipher_encrypt(key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
+        if (block_cipher_encrypt(cipher, key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
             fprintf(stderr, "Block encryption failed\n");
             ret = -1;
             goto out;
@@ -419,6 +422,7 @@ out:
 
 
 int xts_decrypt(
+    const EVP_CIPHER *cipher,
     unsigned char *key1, unsigned char *key2,
     unsigned char *iv,
     unsigned char *in, size_t inlen,
@@ -445,7 +449,7 @@ int xts_decrypt(
 
     // 使用key2加密tweak值
     size_t tweak_len = 0;
-    if (block_cipher_encrypt(key2, NULL, tweak.c, 16, tweak.c, &tweak_len) != 0) {
+    if (block_cipher_encrypt(cipher, key2, NULL, tweak.c, 16, tweak.c, &tweak_len) != 0) {
         fprintf(stderr, "Tweak encryption failed\n");
         ret = -1;
         goto out;
@@ -462,7 +466,7 @@ int xts_decrypt(
 
         // 使用key1加密
         size_t block_len = 0;
-        if (block_cipher_decrypt(key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
+        if (block_cipher_decrypt(cipher, key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
             fprintf(stderr, "Block encryption failed\n");
             ret = -1;
             goto out;
@@ -568,7 +572,7 @@ int xts_decrypt(
 
         // 使用key1解密
         size_t block_len = 0;
-        if (block_cipher_decrypt(key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
+        if (block_cipher_decrypt(cipher, key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
             fprintf(stderr, "Block decryption failed\n");
             ret = -1;
             goto out;
@@ -585,7 +589,7 @@ int xts_decrypt(
         scratch.u[1] ^= tweak.u[1];
         // 使用key1解密
         block_len = 0;
-        if (block_cipher(0, key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
+        if (block_cipher_decrypt(cipher, key1, NULL, scratch.c, 16, scratch.c, &block_len) != 0) {
             fprintf(stderr, "Block decryption failed\n");
             ret = -1;
             goto out;
@@ -798,6 +802,7 @@ static inline void mbedtls_xor(unsigned char *r,
 }
 
 int mbedtls_crypt_xts(int mode,
+                const EVP_CIPHER *cipher,
                 unsigned char *key1,
                 unsigned char *key2,
                 size_t length,
@@ -827,7 +832,7 @@ int mbedtls_crypt_xts(int mode,
     }
 
     /* Compute the tweak. */
-    ret = block_cipher_encrypt(key2, NULL, data_unit, 16, tweak, &out_len);
+    ret = block_cipher_encrypt(cipher, key2, NULL, data_unit, 16, tweak, &out_len);
     if (ret != 0) {
         return ret;
     }
@@ -846,9 +851,9 @@ int mbedtls_crypt_xts(int mode,
         mbedtls_xor(tmp, input, tweak, 16);
 
         if (mode == 1) {
-            ret = block_cipher_encrypt(key1, NULL, tmp, 16, tmp, &out_len);
+            ret = block_cipher_encrypt(cipher, key1, NULL, tmp, 16, tmp, &out_len);
         } else {
-            ret = block_cipher_decrypt(key1, NULL, tmp, 16, tmp, &out_len);
+            ret = block_cipher_decrypt(cipher, key1, NULL, tmp, 16, tmp, &out_len);
         }
         if (ret != 0) {
             return ret;
@@ -887,9 +892,9 @@ int mbedtls_crypt_xts(int mode,
         mbedtls_xor(tmp + i, prev_output + i, t + i, 16 - i);
 
         if (mode == 1) {
-            ret = block_cipher_encrypt(key1, NULL, tmp, 16, tmp, &out_len);
+            ret = block_cipher_encrypt(cipher, key1, NULL, tmp, 16, tmp, &out_len);
         } else {
-            ret = block_cipher_decrypt(key1, NULL, tmp, 16, tmp, &out_len);
+            ret = block_cipher_decrypt(cipher, key1, NULL, tmp, 16, tmp, &out_len);
         }
         if (ret != 0) {
             return ret;
@@ -916,6 +921,8 @@ int main(int argc, char *argv[]) {
     size_t outlen = 0;
     unsigned char dec[128] = {0};
     size_t declen = 0;
+
+    EVP_CIPHER *cipher = EVP_sm4_ecb();
 
     // randomly generate keys and iv
     if (RAND_bytes(key1, sizeof(key1)) != 1) {
@@ -955,13 +962,13 @@ int main(int argc, char *argv[]) {
 
     // use self-implemented XTS encryption
     if (USE_SELF_IMPL) {
-        if (xts_encrypt(key1, key2, iv, in, inlen, out, &outlen) != 0) {
+        if (xts_encrypt(cipher, key1, key2, iv, in, inlen, out, &outlen) != 0) {
             fprintf(stderr, "xts_encrypt failed\n");
             ret = -1;
             goto out;
         }
     } else {
-        if (mbedtls_crypt_xts(1, key1, key2, inlen, iv, in, out) != 0) {
+        if (mbedtls_crypt_xts(1, cipher, key1, key2, inlen, iv, in, out) != 0) {
             fprintf(stderr, "mbedtls_crypt_xts encrypt failed\n");
             ret = -1;
             goto out;
@@ -1042,13 +1049,13 @@ int main(int argc, char *argv[]) {
     memset(dec, 0, sizeof(dec));
     declen = 0;
     if (USE_SELF_IMPL) {
-        if (xts_decrypt(key1, key2, iv, out, outlen, dec, &declen) != 0) {
+        if (xts_decrypt(cipher, key1, key2, iv, out, outlen, dec, &declen) != 0) {
             fprintf(stderr, "xts_decrypt failed\n");
             ret = -1;
             goto out;
         }
     } else {
-        if (mbedtls_crypt_xts(0, key1, key2, outlen, iv, out, dec) != 0) {
+        if (mbedtls_crypt_xts(0, cipher, key1, key2, outlen, iv, out, dec) != 0) {
             fprintf(stderr, "mbedtls_crypt_xts decrypt failed\n");
             ret = -1;
             goto out;
