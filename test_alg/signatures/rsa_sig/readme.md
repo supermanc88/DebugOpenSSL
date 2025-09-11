@@ -28,3 +28,23 @@ RSAPrivateKey ::= SEQUENCE {
 }
 ```
 
+## 填充模式详解
+OpenSSL 支持三种主要的 RSA 填充模式：
+
+- RSA_PKCS1_PADDING：
+
+带摘要：先哈希消息，再应用PKCS#1 v1.5填充
+
+不带摘要：直接对原始数据应用PKCS#1 v1.5填充
+
+- RSA_PKCS1_PSS_PADDING：
+
+必须带摘要：PSS填充方案，更安全
+
+支持可配置的盐长度
+
+- RSA_NO_PADDING：
+
+不带摘要：直接RSA数学运算
+
+输入数据长度必须等于RSA模长
