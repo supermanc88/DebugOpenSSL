@@ -8,11 +8,13 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
+#include "openssl/core_names.h"
+
 int call_gmac_test(EVP_CIPHER *cipher, unsigned char *key, int keylen,
-    unsigned char *iv, int ivlen,
-    unsigned char *aad, int aadlen,
-    unsigned char *msg, int msglen,
-    unsigned char *tag, int taglen) {
+                   unsigned char *iv, int ivlen,
+                   unsigned char *aad, int aadlen,
+                   // unsigned char *msg, int msglen,          // gmac does not encrypt message
+                   unsigned char *tag, int taglen) {
     int ret = 0;
     EVP_CIPHER_CTX *ctx = NULL;
     int len = 0;
@@ -59,15 +61,15 @@ int call_gmac_test(EVP_CIPHER *cipher, unsigned char *key, int keylen,
     }
 
     // Encrypt the message
-    if (msg && msglen > 0) {
-        ret = EVP_EncryptUpdate(ctx, NULL, &len, msg, msglen);
-        if (ret != 1) {
-            fprintf(stderr, "EVP_EncryptUpdate (message) failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
-            ret = -1;
-            goto out;
-        }
-        ciphertext_len = len;
-    }
+    // if (msg && msglen > 0) {
+    //     ret = EVP_EncryptUpdate(ctx, NULL, &len, msg, msglen);
+    //     if (ret != 1) {
+    //         fprintf(stderr, "EVP_EncryptUpdate (message) failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+    //         ret = -1;
+    //         goto out;
+    //     }
+    //     ciphertext_len = len;
+    // }
 
     // Finalize encryption
     ret = EVP_EncryptFinal_ex(ctx, NULL, &len);
@@ -95,6 +97,78 @@ out:
     return ret;
 }
 
+
+int call_gmac_test_use_EVP_MAC(char *cipher_name,
+    unsigned char *key, int keylen,
+    unsigned char *iv, int ivlen,
+    unsigned char *aad, int addlen,
+    unsigned char *tag, int taglen) {
+    int ret = 0;
+
+    EVP_MAC *mac = NULL;
+    EVP_MAC_CTX *ctx = NULL;
+    OSSL_PARAM params[4];
+    size_t outlen = taglen;
+    size_t outsize = taglen;
+
+    mac = EVP_MAC_fetch(NULL, "GMAC", NULL);
+    if (!mac) {
+        fprintf(stderr, "EVP_MAC_fetch failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    ctx = EVP_MAC_CTX_new(mac);
+    if (!ctx) {
+        fprintf(stderr, "EVP_MAC_CTX_new failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_CIPHER, cipher_name, 0);
+    params[1] = OSSL_PARAM_construct_octet_string(OSSL_MAC_PARAM_IV, iv, ivlen);
+    params[2] = OSSL_PARAM_construct_size_t(OSSL_MAC_PARAM_SIZE, &outlen);
+    params[3] = OSSL_PARAM_construct_end();
+
+    if (EVP_MAC_init(ctx, key, keylen, params) != 1) {
+        fprintf(stderr, "EVP_MAC_init failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+
+    if (aad && addlen > 0) {
+        if (EVP_MAC_update(ctx, aad, addlen) != 1) {
+            fprintf(stderr, "EVP_MAC_update (AAD) failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+            ret = -1;
+            goto out;
+        }
+    }
+
+    if (EVP_MAC_final(ctx, tag, &outsize, outlen) != 1) {
+        fprintf(stderr, "EVP_MAC_final failed: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        ret = -1;
+        goto out;
+    }
+    if (outsize != outlen) {
+        fprintf(stderr, "EVP_MAC_final output size mismatch: expected %zu, got %zu\n", outlen, outsize);
+        ret = -1;
+        goto out;
+    }
+
+    ret = 0;
+
+
+out:
+    if (ctx) {
+        EVP_MAC_CTX_free(ctx);
+    }
+    if (mac) {
+        EVP_MAC_free(mac);
+    }
+    return ret;
+}
+
+
 char *gmac_ciphers[] = {
     "aes-128-gcm",
     "aes-192-gcm",
@@ -115,7 +189,7 @@ int main(int argc, char *argv[]) {
     int keylen = 16; // default to AES-128
     int ivlen = 12; // standard IV length for GCM
     int aadlen = strlen((char *)aad);
-    int msglen = strlen((char *)msg);
+    // int msglen = strlen((char *)msg);
     int taglen = 16; // standard tag length
 
     int i = 0;
@@ -147,7 +221,9 @@ int main(int argc, char *argv[]) {
         for (int j = 0; j < ivlen; j++) {
             iv[j] = j + 1;
         }
-        ret = call_gmac_test(cipher, key, keylen, iv, ivlen, aad, aadlen, msg, msglen, tag, taglen);
+        ret = call_gmac_test(cipher, key, keylen, iv, ivlen, aad, aadlen,
+            // msg, msglen,
+            tag, taglen);
         if (ret != 0) {
             fprintf(stderr, "GMAC test failed for cipher %s\n", gmac_ciphers[i]);
             EVP_CIPHER_free(cipher);
@@ -159,7 +235,20 @@ int main(int argc, char *argv[]) {
         }
         printf("\n");
         EVP_CIPHER_free(cipher);
+
+        ret = call_gmac_test_use_EVP_MAC(gmac_ciphers[i], key, keylen, iv, ivlen, aad, aadlen, tag, taglen);
+        if (ret != 0) {
+            fprintf(stderr, "GMAC test using EVP_MAC failed for cipher %s\n", gmac_ciphers[i]);
+            goto end;
+        }
+        printf("GMAC tag using EVP_MAC: ");
+        for (int j = 0; j < taglen; j++) {
+            printf("%02x", tag[j]);
+        }
+        printf("\n");
         i++;
+
+        printf("--------------------------------------------------\n");
     }
 
     ret = 0;
