@@ -17,3 +17,5 @@ add_subdirectory(test_alg/digests)
 add_subdirectory(test_alg/kems)
 add_subdirectory(test_alg/macs)
 add_subdirectory(test_alg/signatures)
+
+add_subdirectory(test_others/test_ctx_copy)
