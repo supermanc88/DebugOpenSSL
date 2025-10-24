@@ -10,3 +10,5 @@
 
 ./Configure -g -O0
 make -j8
+
+可以直接使用clion打开此项目
