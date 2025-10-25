@@ -20,4 +20,6 @@ add_subdirectory(test_alg/signatures)
 
 add_subdirectory(test_others/test_ctx_copy)
 
+add_subdirectory(test_tls)
+
 add_subdirectory(test_c_syntax)

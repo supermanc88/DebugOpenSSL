@@ -1,0 +1,15 @@
+# 编译产物
+test_tls
+*.o
+*.out
+
+# 证书和密钥（临时生成的）
+*.pem
+*.csr
+*.srl
+
+# 日志文件
+*.log
+
+# macOS
+.DS_Store

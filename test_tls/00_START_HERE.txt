@@ -1,0 +1,23 @@
+OpenSSL TLS 教程
+
+完整的 TLS 客户端和服务端实现教程，适合从零开始学习。
+
+快速开始：
+  bash demo.sh
+
+文档：
+  - README.md              完整教程（推荐从这里开始）
+  - QUICK_REFERENCE.md     API 速查表
+  - ONE_WAY_VS_MUTUAL_TLS.md  认证模式对比
+  - INDEX.md               完整文件索引
+
+代码：
+  - test_tls.c             完整实现
+  
+脚本：
+  - demo.sh                自动演示
+  - run_server.sh          启动服务端
+  - run_client.sh          启动客户端
+  - gen_mtls_certs.sh      生成双向认证证书
+
+更多信息请查看 INDEX.md
