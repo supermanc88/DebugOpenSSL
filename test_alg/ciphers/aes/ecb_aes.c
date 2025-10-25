@@ -93,7 +93,7 @@ int dump_hex(const char *title, const unsigned char *buf, size_t len) {
     return 0;
 }
 
-EVP_CIPHER *get_aes_ecb_cipher(int key_size) {
+const EVP_CIPHER *get_aes_ecb_cipher(int key_size) {  // 修正：返回 const EVP_CIPHER *
     switch (key_size) {
         case 16:
             return EVP_aes_128_ecb();
@@ -116,7 +116,7 @@ int main(int argc, char *argv[])
     // test AES Encryption in ECB mode with different key sizes
     for (int i = 0; i < 3; i++) {
         int key_size = aes_key_size[i];
-        EVP_CIPHER *cipher = get_aes_ecb_cipher(key_size);
+        const EVP_CIPHER *cipher = get_aes_ecb_cipher(key_size);  // 修正：const EVP_CIPHER *
         EVP_CIPHER_CTX *ctx = NULL;
         unsigned char *key = NULL;
         unsigned char ciphertext[PLAINTEXT_SIZE] = {0};
@@ -203,7 +203,7 @@ int main(int argc, char *argv[])
     // test AES Decryption in ECB mode with different key sizes
     for (int i = 0; i < 3; i++) {
         int key_size = aes_key_size[i];
-        EVP_CIPHER *cipher = get_aes_ecb_cipher(key_size);
+        const EVP_CIPHER *cipher = get_aes_ecb_cipher(key_size);  // 修正：const EVP_CIPHER *
         EVP_CIPHER_CTX *ctx = NULL;
         unsigned char *key = NULL;
         unsigned char decrypted_text[PLAINTEXT_SIZE] = {0};

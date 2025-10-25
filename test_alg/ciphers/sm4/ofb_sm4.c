@@ -19,7 +19,7 @@ int call_sm4_ofb_encrypt(unsigned char *key,
                          unsigned char *out, size_t *outlen) {
     int ret = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    EVP_CIPHER *cipher = NULL;
+    const EVP_CIPHER *cipher = NULL;  // 修正：应该是 const EVP_CIPHER *
     int ciphertext_len = 0;
     int len = 0;
 
@@ -85,7 +85,7 @@ int call_sm4_ofb_decrypt(unsigned char *key,
                          unsigned char *out, size_t *out_len) {
     int ret = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    EVP_CIPHER *cipher = NULL;
+    const EVP_CIPHER *cipher = NULL;  // 修正：应该是 const EVP_CIPHER *
     int len = 0;
     int plaintext_len = 0;
 

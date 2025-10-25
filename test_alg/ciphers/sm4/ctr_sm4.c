@@ -21,7 +21,7 @@ int call_ctr_sm4_encrypt(unsigned char *key, unsigned char *iv,
                          unsigned char *out, int *out_len) {
     int ret = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    EVP_CIPHER *cipher = NULL;
+    const EVP_CIPHER *cipher = NULL;  // 修正：应该是 const EVP_CIPHER *
     int len = 0;
     int ciphertext_len = 0;
 
@@ -86,7 +86,7 @@ int call_ctr_sm4_decrypt(unsigned char *key, unsigned char *iv,
                          unsigned char *out, int *out_len) {
     int ret = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    EVP_CIPHER *cipher = NULL;
+    const EVP_CIPHER *cipher = NULL;  // 修正：应该是 const EVP_CIPHER *
     int len = 0;
     int plaintext_len = 0;
 
