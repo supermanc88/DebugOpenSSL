@@ -171,9 +171,16 @@ int main(int argc, char *argv[])
             continue;
         }
 
+        // if (1 != EVP_EncryptUpdate(ctx, ciphertext + len, &len, plain_text + len, sizeof(plain_text) / 2)) {
+        //     fprintf(stderr, "Failed to encrypt data: %s\n", ERR_error_string(ERR_get_error(), NULL));
+        //     EVP_CIPHER_CTX_free(ctx);
+        //     ret = -1;
+        //     continue;
+        // }
+
         // Finalize encryption
         int final_len = 0;
-        if (1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &final_len)) {
+        if (1 != EVP_EncryptFinal_ex(ctx, ciphertext + 64, &final_len)) {
             fprintf(stderr, "Failed to finalize encryption: %s\n", ERR_error_string(ERR_get_error(), NULL));
             EVP_CIPHER_CTX_free(ctx);
             ret = -1;
@@ -184,7 +191,7 @@ int main(int argc, char *argv[])
         // Print the ciphertext
         char title[64];
         snprintf(title, sizeof(title), "AES-%d-XTS Ciphertext:", key_size * 8);
-        dump_hex(title, ciphertext, len);
+        dump_hex(title, ciphertext, 64);
 
         // compare with expected ciphertext
         if (memcmp(ciphertext, expected_ciphertext, PLAINTEXT_SIZE) != 0) {

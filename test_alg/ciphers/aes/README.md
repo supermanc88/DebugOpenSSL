@@ -384,6 +384,7 @@ if (EVP_DecryptFinal_ex(ctx, plaintext + len, &final_len) <= 0) {
 - 生成认证标签
 - 支持 AAD
 - **必须预先知道明文长度**
+- **只能调用一次 EVP_EncryptUpdate 加密数据**（不支持分步加密）
 - 不可并行化
 
 #### 实现要点
@@ -421,8 +422,9 @@ EVP_EncryptUpdate(ctx, NULL, &len, NULL, plaintext_len);
 // 6. 设置AAD
 EVP_EncryptUpdate(ctx, NULL, &len, aad, sizeof(aad));
 
-// 7. 加密明文
+// 7. 加密明文（⚠️ CCM 只能调用一次！）
 EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len);
+// ❌ 不能再次调用 EVP_EncryptUpdate 加密更多数据！
 
 // 8. 完成加密
 int final_len;
@@ -456,8 +458,9 @@ EVP_DecryptUpdate(ctx, NULL, &len, NULL, ciphertext_len);
 // 6. 设置AAD
 EVP_DecryptUpdate(ctx, NULL, &len, aad, sizeof(aad));
 
-// 7. 解密密文
+// 7. 解密密文（⚠️ CCM 只能调用一次！）
 EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len);
+// ❌ 不能再次调用 EVP_DecryptUpdate 解密更多数据！
 
 // 8. 完成解密并验证标签
 int final_len;
@@ -470,6 +473,7 @@ if (EVP_DecryptFinal_ex(ctx, plaintext + len, &final_len) <= 0) {
 
 ❌ **忘记设置明文/密文长度**：这是 CCM 最常见的错误，会导致加密失败
 ❌ **明文长度设置错误**：必须精确匹配实际数据长度
+❌ **多次调用 EVP_EncryptUpdate 加密数据**：CCM 只能调用一次 Update 来加密，不支持分步加密
 ❌ **Nonce 重用**：与 GCM 相同的严重问题
 ⚠️ **第二次 `EVP_EncryptInit_ex` 必须使用 NULL cipher**
 ⚠️ **填充设置**：CCM 是流密码模式，不使用填充机制（调用 `set_padding` 是允许的但没有效果）
@@ -479,6 +483,19 @@ if (EVP_DecryptFinal_ex(ctx, plaintext + len, &final_len) <= 0) {
 **为什么 CCM 需要预先设置长度？**
 
 CCM 基于 CBC-MAC，需要预先知道消息长度来计算认证标签。GCM 基于 Galois 域乘法，可以增量更新认证标签。
+
+**为什么 CCM 不支持分步加密？**
+
+CCM 的工作流程是先计算整个消息的 CBC-MAC（认证），然后再使用 CTR 模式加密。这要求在加密前必须拥有完整的数据，因此不能像 GCM 那样支持流式/分步处理。
+
+| 特性 | GCM | CCM |
+|------|-----|-----|
+| 预先设置数据长度 | ❌ 不需要 | ✅ 必须 |
+| 分步加密（多次Update） | ✅ 支持 | ❌ 不支持 |
+| 并行化 | ✅ 支持 | ❌ 不支持 |
+| 性能 | 🚀 更快 | 🐢 较慢 |
+| 专利 | ✅ 无专利 | ✅ 无专利 |
+| 标准化 | ✅ 广泛 | ✅ 广泛 |
 
 #### 适用场景
 
@@ -538,6 +555,7 @@ EVP_EncryptFinal_ex(ctx, ciphertext + len, &final_len);
 ❌ **不支持 AES-192**：XTS 只支持 128 和 256 位
 ❌ **两个子密钥相同**：两部分密钥不能相同（OpenSSL 会检测并报错）
 ❌ **数据长度小于16字节**：XTS 要求数据至少一个完整块（16字节）
+❌ **多次 EVP_EncryptUpdate 分步加密**：XTS 不支持分步加密，必须一次性处理整个数据单元（详见"常见错误与陷阱"章节）
 ❌ **忘记禁用填充**：必须调用 `EVP_CIPHER_CTX_set_padding(ctx, 0)`，否则可能导致错误
 ⚠️ **误用于网络传输**：XTS 不提供认证，不适合网络协议
 ⚠️ **明文长度不是块大小倍数**：虽然 XTS 支持 Ciphertext Stealing，但需要至少16字节
@@ -563,16 +581,16 @@ EVP_EncryptFinal_ex(ctx, ciphertext + len, &final_len);
 
 ### 安全特性对比
 
-| 模式 | 需要IV | IV重用后果 | 提供认证 | 并行加密 | 并行解密 | 填充需求 |
-|------|-------|-----------|---------|---------|---------|---------|
-| ECB | ❌ | N/A | ❌ | ✅ | ✅ | ✅ |
-| CBC | ✅ | 信息泄露 | ❌ | ❌ | ✅ | ✅ |
-| CFB | ✅ | 灾难性 | ❌ | ❌ | 🟡 | ❌ |
-| OFB | ✅ | 灾难性 | ❌ | ❌ | ❌ | ❌ |
-| CTR | ✅ | 灾难性 | ❌ | ✅ | ✅ | ❌ |
-| GCM | ✅ | 灾难性 | ✅ | ✅ | ✅ | ❌ |
-| CCM | ✅ | 灾难性 | ✅ | ❌ | ❌ | ❌ |
-| XTS | ✅ | 信息泄露 | ❌ | 🟡 | 🟡 | ❌ |
+| 模式 | 需要IV | IV重用后果 | 提供认证 | 并行加密 | 并行解密 | 填充需求 | 分步加密 |
+|------|-------|-----------|---------|---------|---------|---------|---------|
+| ECB | ❌ | N/A | ❌ | ✅ | ✅ | ✅ | ✅ |
+| CBC | ✅ | 信息泄露 | ❌ | ❌ | ✅ | ✅ | ✅ |
+| CFB | ✅ | 灾难性 | ❌ | ❌ | 🟡 | ❌ | ✅ |
+| OFB | ✅ | 灾难性 | ❌ | ❌ | ❌ | ❌ | ✅ |
+| CTR | ✅ | 灾难性 | ❌ | ✅ | ✅ | ❌ | ✅ |
+| GCM | ✅ | 灾难性 | ✅ | ✅ | ✅ | ❌ | ✅ |
+| CCM | ✅ | 灾难性 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| XTS | ✅ | 信息泄露 | ❌ | 🟡 | 🟡 | ❌ | ❌ |
 
 **图例**：
 - ✅ = 是/支持
@@ -580,6 +598,7 @@ EVP_EncryptFinal_ex(ctx, ciphertext + len, &final_len);
 - 🟡 = 部分支持
 - 灾难性 = 完全破坏安全性
 - 信息泄露 = 泄露部分信息
+- **分步加密** = 是否支持多次调用 EVP_EncryptUpdate 加密不同数据块
 
 ### 性能对比
 
@@ -674,6 +693,64 @@ EVP_EncryptUpdate(ctx, NULL, &len, aad, aad_len);
 EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len);
 ```
 
+#### ❌ 错误：CCM 多次调用 EVP_EncryptUpdate 加密数据
+
+```c
+// 错误！CCM 不支持分步加密
+EVP_EncryptInit_ex(ctx, EVP_aes_128_ccm(), NULL, NULL, NULL);
+EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, 12, NULL);
+EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, NULL);
+EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce);
+
+// 设置总明文长度
+int len;
+EVP_EncryptUpdate(ctx, NULL, &len, NULL, 64);  // 总共64字节
+
+// 设置AAD
+EVP_EncryptUpdate(ctx, NULL, &len, aad, aad_len);
+
+// ❌ 错误！尝试分两次加密
+EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, 32);
+EVP_EncryptUpdate(ctx, ciphertext + len, &len, plaintext + 32, 32);  // 会失败！
+```
+
+**为什么 CCM 不支持分步加密？**
+
+CCM（Counter with CBC-MAC）模式的工作原理决定了它的限制：
+
+1. **CBC-MAC 计算**：CCM 首先使用 CBC-MAC 计算整个消息的认证标签
+2. **一次性处理**：CBC-MAC 需要在加密之前完成，因此必须一次性提供所有数据
+3. **预知长度**：正因为这个原因，CCM 才需要预先设置明文长度
+
+**技术原因**：
+- CCM 内部先计算整个消息的 CBC-MAC（认证）
+- 然后使用 CTR 模式加密数据和标签（加密）
+- 这两步都需要完整的数据才能正确完成
+
+#### ✅ 正确：CCM 一次性加密所有数据
+
+```c
+// 正确做法
+EVP_EncryptInit_ex(ctx, EVP_aes_128_ccm(), NULL, NULL, NULL);
+EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, 12, NULL);
+EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, NULL);
+EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce);
+
+// 设置明文总长度
+int len;
+EVP_EncryptUpdate(ctx, NULL, &len, NULL, plaintext_len);
+
+// 设置AAD
+EVP_EncryptUpdate(ctx, NULL, &len, aad, aad_len);
+
+// ✅ 一次性加密所有数据
+EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len);
+
+// 完成加密
+int final_len;
+EVP_EncryptFinal_ex(ctx, ciphertext + len, &final_len);
+```
+
 #### ❌ 错误：解密前使用数据
 
 ```c
@@ -737,6 +814,82 @@ memcpy(xts_key, key, 16);
 memcpy(xts_key + 16, key, 16);  // ❌ 复制相同的密钥
 // OpenSSL 会检测到并返回错误
 ```
+
+#### ❌ 错误：尝试分步加密（多次 EVP_EncryptUpdate）
+
+```c
+// 错误！XTS 不支持分步加密
+unsigned char plaintext[64] = { /* 数据 */ };
+int len;
+
+// 第一次 Update
+EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, 32);
+
+// ❌ 第二次 Update 会产生错误的结果！
+EVP_EncryptUpdate(ctx, ciphertext + len, &len, plaintext + 32, 32);
+// 密文与一次性加密所有64字节的结果不同！
+```
+
+**为什么 XTS 不支持分步加密？**
+
+XTS 是专为磁盘扇区加密设计的，具有以下特性：
+
+1. **数据单元边界**：XTS 使用 tweak 值（通常是扇区号）标识每个数据单元
+2. **整体处理**：每个数据单元必须作为一个整体处理，内部使用块索引计算
+3. **Ciphertext Stealing**：处理非块对齐数据时需要知道完整数据单元大小
+
+**技术原因**：
+- XTS 对每个 16 字节块使用 tweak + 块索引进行 XOR 运算
+- 多次 `EVP_EncryptUpdate` 会导致内部块计数器状态不一致
+- 第二次调用时无法正确计算 tweak 的多项式迭代
+
+#### ✅ 正确：一次性加密整个数据单元
+
+```c
+// 正确做法：一次性处理整个数据单元
+unsigned char plaintext[64] = { /* 数据 */ };
+int len, final_len;
+
+// ✅ 一次 Update 处理所有数据
+EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, sizeof(plaintext));
+EVP_EncryptFinal_ex(ctx, ciphertext + len, &final_len);
+```
+
+**如果需要加密大量数据怎么办？**
+
+按固定大小的数据单元（扇区）分块处理，每个扇区使用不同的 tweak：
+
+```c
+#define SECTOR_SIZE 512  // 或 4096
+
+for (int sector = 0; sector < num_sectors; sector++) {
+    // 为每个扇区设置不同的 tweak（通常是扇区号）
+    unsigned char tweak[16];
+    memset(tweak, 0, 16);
+    memcpy(tweak, &sector, sizeof(sector));
+    
+    // 重新初始化上下文
+    EVP_EncryptInit_ex(ctx, cipher, NULL, xts_key, tweak);
+    
+    // ✅ 一次性加密整个扇区
+    int len, final_len;
+    EVP_EncryptUpdate(ctx, 
+                      ciphertext + sector * SECTOR_SIZE,
+                      &len,
+                      plaintext + sector * SECTOR_SIZE,
+                      SECTOR_SIZE);
+    EVP_EncryptFinal_ex(ctx, ciphertext + sector * SECTOR_SIZE + len, &final_len);
+}
+```
+
+**与其他模式对比**：
+
+| 模式 | 支持分步加密 | 原因 |
+|------|--------------|------|
+| ECB, CBC, CFB, OFB | ✅ 支持 | 块间独立或链式结构，可流式处理 |
+| CTR, GCM | ✅ 支持 | 流密码模式，可增量处理 |
+| **CCM** | ❌ **不支持** | **CBC-MAC 需要完整数据，先认证后加密** |
+| **XTS** | ❌ **不支持** | **需知道完整数据单元边界和大小** |
 
 ### 4. 填充错误
 
